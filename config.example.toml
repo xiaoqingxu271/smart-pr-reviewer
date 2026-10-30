@@ -1,0 +1,15 @@
+# 噪音过滤的跳过规则模板（PRD §4.3），可在项目根目录另存为 config.toml 由服务加载
+[skip]
+# glob 模式列表
+patterns = [
+    "package-lock.json",
+    "yarn.lock",
+    "pnpm-lock.yaml",
+    "poetry.lock",
+    "Pipfile.lock",
+    "go.sum",
+    "vendor/**",
+    "third_party/**",
+    "dist/**",
+    "node_modules/**",
+]

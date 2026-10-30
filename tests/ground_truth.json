@@ -1,0 +1,102 @@
+[
+  {
+    "pr": "pr-01-hardcoded-secret",
+    "vulnerabilities": [
+      {
+        "file_path": "app/auth.py",
+        "line": 5,
+        "type": "hardcoded_secret"
+      }
+    ]
+  },
+  {
+    "pr": "pr-02-sql-injection",
+    "vulnerabilities": [
+      {
+        "file_path": "app/db.py",
+        "line": 2,
+        "type": "sql_injection"
+      }
+    ]
+  },
+  {
+    "pr": "pr-03-command-injection",
+    "vulnerabilities": [
+      {
+        "file_path": "app/backup.py",
+        "line": 5,
+        "type": "command_injection"
+      }
+    ]
+  },
+  {
+    "pr": "pr-04-insecure-deserialize",
+    "vulnerabilities": [
+      {
+        "file_path": "app/sync.py",
+        "line": 5,
+        "type": "unsafe_deserialization"
+      }
+    ]
+  },
+  {
+    "pr": "pr-05-path-traversal",
+    "vulnerabilities": [
+      {
+        "file_path": "app/files.py",
+        "line": 8,
+        "type": "path_traversal"
+      }
+    ]
+  },
+  {
+    "pr": "pr-06-weak-hash",
+    "vulnerabilities": [
+      {
+        "file_path": "app/users.py",
+        "line": 5,
+        "type": "weak_hash"
+      }
+    ]
+  },
+  {
+    "pr": "pr-07-tls-verify-disabled",
+    "vulnerabilities": [
+      {
+        "file_path": "app/client.py",
+        "line": 5,
+        "type": "tls_verification_disabled"
+      }
+    ]
+  },
+  {
+    "pr": "pr-08-unsafe-yaml",
+    "vulnerabilities": [
+      {
+        "file_path": "app/config.py",
+        "line": 5,
+        "type": "unsafe_deserialization"
+      }
+    ]
+  },
+  {
+    "pr": "pr-09-eval-injection",
+    "vulnerabilities": [
+      {
+        "file_path": "app/rules.py",
+        "line": 2,
+        "type": "code_injection"
+      }
+    ]
+  },
+  {
+    "pr": "pr-10-xss",
+    "vulnerabilities": [
+      {
+        "file_path": "app/render.js",
+        "line": 2,
+        "type": "xss"
+      }
+    ]
+  }
+]
