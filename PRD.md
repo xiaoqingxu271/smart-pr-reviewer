@@ -249,7 +249,14 @@ class PRReviewResult(BaseModel):
 
 - 请求体（Pydantic 校验）：`{"mode": "local" | "api", "repo_path"?, "base_branch"?, "head_branch"?, "repo_url"?, "pr_number"?}`；
 - 后台任务执行（FastAPI `BackgroundTasks` 或 asyncio），不阻塞请求；
-- 服务端日志记录每次审查的：耗时、token 用量、各阶段块数、幻觉过滤数。
+- **任务态与结果缓存持久化到 SQLite**（`DB_PATH`）：内存 dict 在多 worker 下会让
+  `GET /review/{id}` 随机 404、进程重启即丢全部任务；
+- **鉴权**：`/review*` 一律校验 `Authorization: Bearer $API_TOKEN`；未配置 `API_TOKEN`
+  时接口返回 503 **停用**（fail-closed），而不是无鉴权运行；`/health` 免鉴权供探活；
+- **local 模式白名单**：只允许读取 `ALLOWED_REPO_ROOTS` 列出的目录下的仓库，未配置即禁用；
+- 服务端日志记录每次审查的：耗时、token 用量、各阶段块数、幻觉过滤数、**检索命中率与
+  top1 均分**（`log.py`，单行 key=value）；
+- 返回给调用方的失败信息是友好文案，异常细节（含可能存在的凭据）只进服务端日志。
 
 ### 6.2 配置管理
 
@@ -269,11 +276,19 @@ class PRReviewResult(BaseModel):
 
 - **代码隐私**：OpenAI 模式意味着源码出内网——必须在 README 中显著声明，并提供 Ollama 本地模式作为隐私替代方案（这是双后端设计的核心动机）；
 - API token 等敏感配置只从环境变量读取，禁止入库、禁止打印到日志；
-- 输出报告不回显完整密钥类敏感值（如检测到硬编码密钥，报告中脱敏展示前 4 位）。
+- 输出**不回显完整密钥类敏感值**（如检测到硬编码密钥，展示时打码为 `sk-abcd****`）；
+  脱敏必须在**结果构造层**完成，而不是只在 Markdown 渲染层——`GET /review/{id}` 的 JSON
+  同样是对外输出，只在报告里打码等于换个出口把原文交出去。
 
 ### 6.5 缓存
 
-- 以 diff 内容 hash 为 key 缓存审查结果（内存或 SQLite），相同 diff 不重复消耗 token；缓存 TTL 默认 24 小时。
+- 缓存 key = **`head_ref` + diff 原文的 sha256**（不是请求体/分支名）：同一分支 force-push
+  或追加 commit 后分支名不变而内容已变，用分支名当 key 会在 TTL 内把**上一版代码**的
+  审查报告当新版返回——在审查产品里这是给出错误结论，不是省 token；
+- 实现在 SQLite（`result_cache` 表），与任务态同库；相同 diff 不重复消耗 token，
+  缓存 TTL 默认 24 小时，写入时顺带清理过期行；
+- 缓存命中在任务态里以 `cached: true` 标记，`/review` 的响应仍是先返回 `review_id`
+  （内容级判重必须先取到 diff，无法在提交时完成）。
 
 ---
 

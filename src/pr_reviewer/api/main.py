@@ -1,28 +1,38 @@
 """FastAPI 服务（PRD §6.1）：异步任务 + 状态轮询 + diff hash 缓存（§6.5）。
 
+落地要点（都是踩过之后补的）：
+- 任务态与结果缓存落在 SQLite，进程重启和多 worker 都能查到 review_id；
+- 缓存 key 是 **diff 内容 + head**，不是分支名——否则 force-push 后 24 小时内
+  会把上一版代码的报告当新版返回；
+- 审查接口一律要求 Bearer token，未配置就 503 停用（fail-closed）：报告里含源码
+  片段，裸奔等于开一条源码外泄通道；
+- 返回给调用方的错误是友好文案，异常细节只进服务端日志。
+
 工厂函数 create_app 支持依赖注入（测试用 FakeLLM）；模块级 app 供 uvicorn 使用。
 """
 from __future__ import annotations
 
 import uuid
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException
+from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException
 from fastapi.responses import PlainTextResponse
 
-from pr_reviewer.cache import TTLCache
 from pr_reviewer.config import Settings, get_settings
 from pr_reviewer.log import get_logger
 from pr_reviewer.models import PRReviewResult, ReviewRequest
 from pr_reviewer.pipeline import run_review
 from pr_reviewer.report import render_markdown
-from pr_reviewer.sources import fetch_diff, load_contents
+from pr_reviewer.sources import RepoNotAllowed, fetch_diff, load_contents
+from pr_reviewer.store import ResultCache, TaskStore
+
+GENERIC_FAILURE = "审查未完成：服务端内部错误，请携带 review_id 联系管理员"
 
 
 def create_app(settings: Settings | None = None, llm=None, retriever=None) -> FastAPI:
     settings = settings or get_settings()
     app = FastAPI(title="PR Smart Reviewer", version="0.1.0")
-    tasks: dict[str, dict] = {}
-    cache: TTLCache = TTLCache(settings.cache_ttl_hours)
+    store = TaskStore(settings.db_path)
+    cache = ResultCache(settings.db_path, settings.cache_ttl_hours)
 
     def _llm():
         if llm is not None:
@@ -39,52 +49,62 @@ def create_app(settings: Settings | None = None, llm=None, retriever=None) -> Fa
         except Exception:  # noqa: BLE001 — ChromaDB 不可用 → 无 RAG 降级（PRD §6.3）
             return None
 
+    def require_token(authorization: str | None = Header(default=None)) -> None:
+        if not settings.api_token:
+            raise HTTPException(503, "审查接口未启用：服务端需配置 API_TOKEN")
+        if authorization != f"Bearer {settings.api_token}":
+            raise HTTPException(401, "Authorization 缺失或不正确")
+
     def _run_task(task_id: str, request: ReviewRequest) -> None:
         log = get_logger()
-        tasks[task_id]["status"] = "running"
-        # 只记标识与计数：源码正文、API key 一律不入日志（PRD §6.4）
+        store.update(task_id, status="running")
         log.info("stage=task_start task=%s mode=%s", task_id, request.mode)
         try:
             diff, head_ref = fetch_diff(request, settings)
+            key = ResultCache.make_key(diff.raw_diff or "", str(head_ref))
+            hit = cache.get(key)
+            if hit is not None:
+                store.update(task_id, status="completed", result=hit["result"],
+                             report=hit["report"], cached=True)
+                log.info("stage=task_cached task=%s", task_id)
+                return
+
             contents = load_contents(request, head_ref,
-                                     [f.file_path for f in diff.reviewable_files])
+                                     [f.file_path for f in diff.reviewable_files], settings)
             result: PRReviewResult = run_review(settings, diff, contents, _llm(), _retriever())
             report = render_markdown(result)
-            settings.reports_dir.mkdir(exist_ok=True)
+            payload = result.model_dump(mode="json")
+            settings.reports_dir.mkdir(parents=True, exist_ok=True)
             (settings.reports_dir / f"{task_id}.md").write_text(report, encoding="utf-8")
-            tasks[task_id].update(status="completed", result=result, report=report)
-            cache.put(TTLCache.make_key(request.model_dump()),
-                      {"result": result, "report": report})
+            store.update(task_id, status="completed", result=payload, report=report)
+            cache.put(key, payload, report)
             log.info("stage=task_done task=%s issues=%d duration=%.2fs",
                      task_id, len(result.issues), result.duration_seconds)
-        except Exception as exc:  # noqa: BLE001 — 任务级兜底，失败原因写入状态
+        except RepoNotAllowed as exc:
+            store.update(task_id, status="failed", error=str(exc))
+            log.warning("stage=task_rejected task=%s reason=%s", task_id, exc)
+        except Exception as exc:  # noqa: BLE001 — 任务级兜底：细节进日志，结论给调用方
+            store.update(task_id, status="failed", error=GENERIC_FAILURE)
             log.warning("stage=task_failed task=%s error_type=%s detail=%s",
-                        task_id, type(exc).__name__, str(exc)[:200])
-            tasks[task_id].update(status="failed", error=str(exc))
+                        task_id, type(exc).__name__, str(exc)[:300])
 
-    @app.post("/review")
+    @app.post("/review", dependencies=[Depends(require_token)])
     def submit_review(request: ReviewRequest, background: BackgroundTasks):
-        key = TTLCache.make_key(request.model_dump())
-        cached = cache.get(key)
         task_id = uuid.uuid4().hex[:12]
-        if cached is not None:
-            tasks[task_id] = {"status": "completed", "result": cached["result"],
-                              "report": cached["report"], "cached": True}
-            return {"review_id": task_id, "status": "completed", "cached": True}
-        tasks[task_id] = {"status": "queued"}
+        store.create(task_id, request.model_dump(exclude_none=True))
         background.add_task(_run_task, task_id, request)
         return {"review_id": task_id, "status": "queued"}
 
-    @app.get("/review/{task_id}")
+    @app.get("/review/{task_id}", dependencies=[Depends(require_token)])
     def get_review(task_id: str):
-        task = tasks.get(task_id)
+        task = store.get(task_id)
         if not task:
             raise HTTPException(404, "review not found")
-        return {"review_id": task_id, **task}
+        return {k: task[k] for k in ("review_id", "status", "result", "error", "cached")}
 
-    @app.get("/review/{task_id}/report")
+    @app.get("/review/{task_id}/report", dependencies=[Depends(require_token)])
     def get_report(task_id: str):
-        task = tasks.get(task_id)
+        task = store.get(task_id)
         if not task:
             raise HTTPException(404, "review not found")
         if task["status"] != "completed":
@@ -93,16 +113,26 @@ def create_app(settings: Settings | None = None, llm=None, retriever=None) -> Fa
 
     @app.get("/health")
     def health():
-        probe = {"llm_backend": settings.llm_backend, "llm": None, "rag": None}
+        """探活不需要 token（部署健康检查用），但只回状态不回内容。"""
+        probe = {"llm_backend": settings.llm_backend, "llm": None, "rag": None,
+                 "auth_configured": bool(settings.api_token),
+                 "local_mode_allowed": bool(settings.allowed_repo_roots.strip()),
+                 "db": None}
         try:
             probe["llm"] = _llm().health()
         except Exception as exc:  # noqa: BLE001
-            probe["llm"] = f"error: {exc}"
+            probe["llm"] = f"error: {type(exc).__name__}"
         try:
             r = _retriever()
-            probe["rag"] = bool(r and r._load())
+            size = r.size() if r else 0
+            # available 以"索引真的有内容"为准：空索引就是检索空转，正是最初的故障形态
+            probe["rag"] = {"available": bool(r and size), "index_size": size}
         except Exception as exc:  # noqa: BLE001
-            probe["rag"] = f"error: {exc}"
+            probe["rag"] = {"available": False, "error": type(exc).__name__}
+        try:
+            probe["db"] = store.conn_ok()
+        except Exception as exc:  # noqa: BLE001
+            probe["db"] = f"error: {type(exc).__name__}"
         return {"status": "ok", **probe}
 
     return app

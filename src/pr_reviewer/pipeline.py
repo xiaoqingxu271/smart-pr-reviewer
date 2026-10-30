@@ -13,6 +13,7 @@ from pr_reviewer.config import Settings
 from pr_reviewer.diff_extractor import DiffResult
 from pr_reviewer.llm.base import LLMOutputError, LLMUnavailableError
 from pr_reviewer.log import get_logger
+from pr_reviewer.masking import mask_secrets
 from pr_reviewer.models import CodeChunk, PRReviewResult
 from pr_reviewer.reviewer import ChunkReviewer, SYSTEM_PROMPT
 
@@ -92,7 +93,10 @@ def run_review(settings: Settings, diff: DiffResult, file_contents: dict[str, st
             issues.extend(batch_issues)
 
     from pr_reviewer.reviewer import merge_issues
-    merged = merge_issues(issues)
+    # 脱敏在结果层就做（PRD §6.4）：JSON 响应和 Markdown 都是对外输出
+    merged = [i.model_copy(update={"issue_description": mask_secrets(i.issue_description),
+                                   "suggestion": mask_secrets(i.suggestion)})
+              for i in merge_issues(issues)]
 
     # 条款原文摘录（PRD §5.3 可追溯性）：只摘 issue 实际引用到的条款
     cited_ids = sorted({rid for issue in merged for rid in issue.related_rules})

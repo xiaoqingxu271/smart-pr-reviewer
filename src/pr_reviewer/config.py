@@ -50,11 +50,18 @@ class Settings(BaseSettings):
     # 服务
     host: str = "0.0.0.0"
     port: int = 8000
+    # 接口鉴权（PRD §6.4）：留空 = 审查接口一律 503 停用（fail-closed），
+    # 而不是"没配就当公开服务跑"——报告里含源码片段，裸奔等于源码外泄通道
+    api_token: str = ""
+    # local 模式允许读取的仓库根目录（逗号分隔）；留空 = 禁用 local 模式。
+    # 不限制的话任何调用方都能让服务器读取磁盘上任意 git 仓库
+    allowed_repo_roots: str = ""
 
     # 路径
     standards_md_path: Path = Path("docs/研发代码安全规范.md")
     chroma_dir: Path = Path(".chroma")
     reports_dir: Path = Path("reports")
+    db_path: Path = Path(".data/reviews.sqlite3")   # 任务态 + 结果缓存（PRD §6.1/§6.5）
 
 
 def get_settings() -> Settings:

@@ -22,7 +22,13 @@ python -m scripts.check_retrieval
 # 4. 启动服务
 uvicorn pr_reviewer.api.main:app --reload
 
-# 5. 测试
+# 5. 调用（/review* 需要 Bearer token；未配 API_TOKEN 时接口一律 503 停用）
+curl -X POST localhost:8000/review \
+  -H "Authorization: Bearer dev-local-8f3c21a9" -H "Content-Type: application/json" \
+  -d '{"mode":"api","repo_url":"https://github.com/you/repo","pr_number":12}'
+curl localhost:8000/review/<review_id> -H "Authorization: Bearer dev-local-8f3c21a9"
+
+# 6. 测试
 pytest
 ```
 

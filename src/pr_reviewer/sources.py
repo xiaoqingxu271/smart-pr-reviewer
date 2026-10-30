@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import base64
+from pathlib import Path
 from urllib.parse import quote
 
 import httpx
@@ -14,6 +15,25 @@ from pr_reviewer.diff_extractor import DiffResult, file_change_from_patch, parse
 from pr_reviewer.models import ChangeType
 
 TIMEOUT = 30
+
+
+class RepoNotAllowed(ValueError):
+    """local 模式请求了白名单之外的仓库路径（PRD §6.4）。"""
+
+
+def assert_local_repo_allowed(repo_path: str, settings) -> None:
+    """服务端只允许读取管理员指定目录下的仓库。
+
+    不加这层限制时，`mode=local` + 任意 `repo_path` 等于把"读取服务器上任何 git
+    仓库并把内容送去 LLM"的能力开放给了每个调用方。报错文案只说怎么才能被允许，
+    不回显路径、不暴露异常细节。
+    """
+    roots = [Path(p).resolve() for p in settings.allowed_repo_roots.split(",") if p.strip()]
+    if not roots:
+        raise RepoNotAllowed("本地仓库审查未开放：需服务管理员配置 ALLOWED_REPO_ROOTS")
+    target = Path(repo_path).resolve()
+    if not any(target == root or root in target.parents for root in roots):
+        raise RepoNotAllowed("该仓库路径不在服务允许的目录范围内")
 
 
 # ---------------------------------------------------------------- 本地模式
@@ -122,6 +142,7 @@ def fetch_diff(request, settings) -> tuple[DiffResult, str]:
     if request.mode == "local":
         if not (request.repo_path and request.base_branch and request.head_branch):
             raise ValueError("local 模式需要 repo_path / base_branch / head_branch")
+        assert_local_repo_allowed(request.repo_path, settings)
         return fetch_diff_local(request.repo_path, request.base_branch,
                                 request.head_branch), request.head_branch
     if not (request.repo_url and request.pr_number):
@@ -131,8 +152,11 @@ def fetch_diff(request, settings) -> tuple[DiffResult, str]:
     return fetch_diff_gitlab(request.repo_url, request.pr_number)
 
 
-def load_contents(request, head_ref: str, paths: list[str]) -> dict[str, str]:
+def load_contents(request, head_ref: str, paths: list[str], settings=None) -> dict[str, str]:
     if request.mode == "local":
+        # 再校验一次：这个入口直接按路径读文件内容，不能只依赖上游检查
+        if settings is not None:
+            assert_local_repo_allowed(request.repo_path, settings)
         return load_contents_local(request.repo_path, head_ref, paths)
     if "github.com" in request.repo_url:
         return load_contents_github(request.repo_url, head_ref, paths)

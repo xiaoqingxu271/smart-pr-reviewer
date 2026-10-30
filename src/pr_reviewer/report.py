@@ -3,17 +3,8 @@ from __future__ import annotations
 
 import re
 
+from pr_reviewer.masking import mask_secrets
 from pr_reviewer.models import PRReviewResult
-
-_SECRET_RE = re.compile(r"(sk-[A-Za-z0-9_-]{4})([A-Za-z0-9_-]+)")
-# 引号包裹的长 token（sup3r-s3cret-key 等），保留前 4 位
-_QUOTED_SECRET_RE = re.compile(r"(['\"])([A-Za-z0-9]{4})[A-Za-z0-9_-]{8,}\1")
-
-
-def _mask(text: str) -> str:
-    """硬编码密钥类敏感值脱敏：保留前 4 位（PRD §6.4）。"""
-    text = _SECRET_RE.sub(r"\1****", text)
-    return _QUOTED_SECRET_RE.sub(r"\1\2****\1", text)
 
 
 def render_markdown(result: PRReviewResult) -> str:
@@ -56,15 +47,15 @@ def render_markdown(result: PRReviewResult) -> str:
             f"{issue.file_path}:{issue.line_number}"
             f"（{issue.issue_type}，置信度 {issue.confidence}）",
             )
-        lines += ["", _mask(issue.issue_description), "",
-                  f"**建议**：{_mask(issue.suggestion)}", ""]
+        lines += ["", mask_secrets(issue.issue_description), "",
+                  f"**建议**：{mask_secrets(issue.suggestion)}", ""]
         if issue.related_rules:
             lines += [f"**命中规范**：{', '.join(issue.related_rules)}", ""]
             for rid in issue.related_rules:
                 excerpt = result.rule_excerpts.get(rid)
                 if excerpt:      # 附条款原文（PRD §5.3 可追溯性），压成一行引用
                     flat = re.sub(r"\s+", " ", excerpt).strip()
-                    lines += [f"> `{rid}`：{_mask(flat)}", ""]
+                    lines += [f"> `{rid}`：{mask_secrets(flat)}", ""]
     if result.skipped_files:
         lines += ["## 跳过文件", "",
                   *[f"- `{p}`（锁文件/二进制/生成代码/删除）" for p in result.skipped_files], ""]
