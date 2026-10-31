@@ -27,7 +27,9 @@ TYPE_TO_RULE = {
     "unsafe_deserialization": "SEC-003", "command_injection": "SEC-004",
     "path_traversal": "SEC-005", "weak_hash": "SEC-006",
     "tls_verification_disabled": "SEC-006", "code_injection": "SEC-008",
-    "xss": "SEC-009",
+    "xss": "SEC-009", "route_not_registered": "SEC-010",
+    "db_access_outside_repository": "SEC-011",
+    "internal_call_without_client": "SEC-012",
 }
 
 settings = get_settings()
@@ -64,7 +66,7 @@ for entry in json.loads(GT_PATH.read_text(encoding="utf-8")):
 print(f"\n规范条款可追溯率 = {kept}/{total}；漏召且为空（非错置）= {missed_empty}")
 
 # 干净块：看有多少会被放行
-clean_leak = clean_total = 0
+clean_leak = clean_total = injected = blocks = 0
 for pr_dir in sorted((FIXTURES / "clean_prs").iterdir()):
     if not pr_dir.is_dir():
         continue
@@ -74,5 +76,9 @@ for pr_dir in sorted((FIXTURES / "clean_prs").iterdir()):
         if not c.changed_lines:
             continue
         clean_total += 1
-        clean_leak += bool(r.retrieve(c.content))
-print(f"干净块放行 = {clean_leak}/{clean_total}")
+        hits = r.retrieve(c.content)
+        blocks += 1
+        injected += len(hits)
+        clean_leak += bool(hits)
+print(f"干净块放行 = {clean_leak}/{clean_total}"
+      f"　平均注入条款数 = {injected / blocks:.1f} 条/块（抬 top_k 的代价在这里）")

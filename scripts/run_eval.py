@@ -39,7 +39,16 @@ TYPE_KEYWORDS = {
     "tls_verification_disabled": ["verify", "tls", "证书", "校验"],
     "code_injection": ["eval", "exec", "注入", "执行"],
     "xss": ["xss", "innerhtml", "脚本", "跨站"],
+    # 组织私有约定类：模型常把它归成 style/logic，不是 security
+    "route_not_registered": ["gateway", "路由", "route", "注册", "对外暴露"],
+    "db_access_outside_repository": ["repository", "仓储", "直连", "连接", "分层"],
+    "internal_call_without_client": ["internal_client", "内部服务", "鉴权", "服务发现"],
 }
+
+# 私有约定类违规：判定只看位置与描述关键词，不要求 issue_type == "security"
+# （模型完全可能合理地把它标成 style/logic，用类型过滤会系统性低估召回）
+CONVENTION_TYPES = {"route_not_registered", "db_access_outside_repository",
+                    "internal_call_without_client"}
 
 
 def load_pr_dir(pr_dir: Path) -> tuple[DiffResult, dict[str, str]]:
@@ -128,7 +137,7 @@ def make_llm_and_retriever(args):
 
 
 def type_match(issue, gt_type: str) -> bool:
-    if issue.issue_type != "security":
+    if issue.issue_type != "security" and gt_type not in CONVENTION_TYPES:
         return False
     desc = issue.issue_description.lower()
     # 类型等价：描述命中类型关键词表，或直接含类型名（code_injection → "code injection"）

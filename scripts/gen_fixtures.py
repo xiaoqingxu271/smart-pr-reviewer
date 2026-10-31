@@ -46,6 +46,26 @@ VULN: list[dict] = [
     {"pr": "pr-10-xss",
      "files": {"app/render.js": "function renderComment(el, text) {\n  el.innerHTML = text;\n}\n"},
      "gt": [("app/render.js", 2, "xss")]},
+    # ---- 组织私有约定类：代码没有通用安全缺陷，只有知道内部封装层才能判定。
+    # 这批用例是让"RAG 提升召回"变得可测量的前提（教科书式漏洞模型本就会）。
+    {"pr": "pr-p01-route-not-gateway",
+     "files": {"app/api/user.py":
+               'from fastapi import APIRouter\n\n\nrouter = APIRouter()\n\n\n'
+               '@router.get("/user/{uid}")\ndef get_user(uid: int):\n    return load_profile(uid)\n'},
+     "gt": [("app/api/user.py", 7, "route_not_registered")]},
+    {"pr": "pr-p02-db-outside-repository",
+     "files": {"app/handler/order.py":
+               'import sqlite3\n\n\ndef list_orders(tenant_id):\n'
+               '    conn = sqlite3.connect("orders.db")\n'
+               '    rows = conn.execute("SELECT id FROM orders WHERE tenant = ?", '
+               '(tenant_id,)).fetchall()\n    conn.close()\n    return rows\n'},
+     "gt": [("app/handler/order.py", 5, "db_access_outside_repository")]},
+    {"pr": "pr-p03-internal-call-plain-requests",
+     "files": {"app/services/report.py":
+               "import requests\n\n\ndef fetch_quota(host):\n"
+               '    resp = requests.get(f"http://{host}:8080/quota", timeout=3)\n'
+               "    return resp.json()\n"},
+     "gt": [("app/services/report.py", 5, "internal_call_without_client")]},
 ]
 
 CLEAN: list[tuple[str, dict[str, str]]] = [

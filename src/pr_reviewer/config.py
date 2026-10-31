@@ -35,7 +35,12 @@ class Settings(BaseSettings):
     # 审查参数
     token_budget: int = 100_000
     chunk_token_limit: int = 3000       # 巨函数二级切分阈值（PRD §5.2）
-    retrieval_top_k: int = 3
+    # 检索过滤（PRD §5.3）：threshold 判 top1——"这次检索到底有没有指向"；
+    # margin 判尾部——"还有哪些条款和冠军属于同一个答案"。
+    # top_k 不是越小越好：它要覆盖"正确答案在语料里被挤出前几名"的情况。
+    # 实测 7 条款时 top_k=3 全命中，扩到 12 条款后 SEC-010 掉到第 5 名被截断
+    # （可追溯率 12/13），抬到 5 才恢复 13/13——所以 top_k 得随语料规模复核。
+    retrieval_top_k: int = 5
     # 检索过滤（PRD §5.3）：threshold 判 top1——"这次检索到底有没有指向"；
     # margin 判尾部——"还有哪些条款和冠军属于同一个答案"。
     # 0.45/0.05 是「条款带典型违规示例 + bge-base-zh-v1.5 + 检索前缀」在 10 个漏洞块 /

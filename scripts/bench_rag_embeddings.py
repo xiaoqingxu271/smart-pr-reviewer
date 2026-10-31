@@ -48,6 +48,9 @@ TYPE_TO_RULE = {
     "tls_verification_disabled": "SEC-006",
     "code_injection": "SEC-008",
     "xss": "SEC-009",
+    "route_not_registered": "SEC-010",
+    "db_access_outside_repository": "SEC-011",
+    "internal_call_without_client": "SEC-012",
 }
 
 # BGE 中文官方推荐的检索指令前缀（query 侧，doc 侧不加）

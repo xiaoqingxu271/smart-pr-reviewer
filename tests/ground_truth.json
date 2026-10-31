@@ -98,5 +98,35 @@
         "type": "xss"
       }
     ]
+  },
+  {
+    "pr": "pr-p01-route-not-gateway",
+    "vulnerabilities": [
+      {
+        "file_path": "app/api/user.py",
+        "line": 7,
+        "type": "route_not_registered"
+      }
+    ]
+  },
+  {
+    "pr": "pr-p02-db-outside-repository",
+    "vulnerabilities": [
+      {
+        "file_path": "app/handler/order.py",
+        "line": 5,
+        "type": "db_access_outside_repository"
+      }
+    ]
+  },
+  {
+    "pr": "pr-p03-internal-call-plain-requests",
+    "vulnerabilities": [
+      {
+        "file_path": "app/services/report.py",
+        "line": 5,
+        "type": "internal_call_without_client"
+      }
+    ]
   }
 ]
