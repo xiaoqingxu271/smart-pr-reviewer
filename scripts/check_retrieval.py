@@ -30,6 +30,8 @@ TYPE_TO_RULE = {
     "xss": "SEC-009", "route_not_registered": "SEC-010",
     "db_access_outside_repository": "SEC-011",
     "internal_call_without_client": "SEC-012",
+    "task_not_registered": "SEC-013", "money_as_float": "SEC-015",
+    "raw_exception_leaked": "SEC-014", "cachekey_concatenated": "SEC-016",
 }
 
 settings = get_settings()

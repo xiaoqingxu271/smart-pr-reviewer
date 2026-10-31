@@ -46,12 +46,18 @@ TYPE_KEYWORDS = {
     "route_not_registered": ["gateway"],
     "db_access_outside_repository": ["repository", "仓储", "dao"],
     "internal_call_without_client": ["internal_client"],
+    "task_not_registered": ["scheduler"],
+    "money_as_float": ["money"],
+    "raw_exception_leaked": ["raise_business", "业务错误码"],
+    "cachekey_concatenated": ["cachekey"],
 }
 
 # 私有约定类违规：判定只看位置与描述关键词，不要求 issue_type == "security"
 # （模型完全可能合理地把它标成 style/logic，用类型过滤会系统性低估召回）
 CONVENTION_TYPES = {"route_not_registered", "db_access_outside_repository",
-                    "internal_call_without_client"}
+                    "internal_call_without_client", "task_not_registered",
+                    "money_as_float", "raw_exception_leaked",
+                    "cachekey_concatenated"}
 
 
 def load_pr_dir(pr_dir: Path) -> tuple[DiffResult, dict[str, str]]:
@@ -223,7 +229,19 @@ def render_md(mode: str, rag: bool, r: dict) -> str:
         "",
         f"- **召回率：{r['recall']:.0%}**（{r['matched']}/{r['total']}，PRD 目标 ≥ 80%）",
         f"- **误报：平均 {r['fp_per_pr']:.1f} 个/干净 PR**（共 {r['fp_total']}，PRD 目标 ≤ 2）",
-        f"- 漏洞 PR {r['n_vuln_prs']} 个，干净 PR {r['n_clean']} 个",
+        f"- 漏洞 PR {r['n_vuln_prs']} 个，干净 PR {r['n_clean']} 个"
+        f"，失败块 {r['errors']}，token {r['tokens']:,}",
+    ]
+    if mode == "fake":
+        lines += [
+            "",
+            "> 口径说明：`--llm fake` 用的是 KeywordFakeLLM——一组正则预言机，只认识 A 组",
+            "> 那 9 类教科书式漏洞的已知模式，**天生看不见 B 组私有约定**（gateway/scheduler/",
+            "> Money/cachekey 这类只有内部规范才知道的约定）。所以 fake 模式下 B 组召回为 0",
+            "> 是设计使然而非缺陷；这一档只用来验证评测链路自洽（匹配、聚合、报表），",
+            "> 不代表模型真实能力。B 组的增益见 experiments/convention-ablation.md。",
+        ]
+    lines += [
         "",
         "| PR | 标注漏洞数 | 命中 | 报告 issue 数 | 耗时(s) |",
         "|---|---|---|---|---|",

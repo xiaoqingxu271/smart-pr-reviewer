@@ -128,5 +128,45 @@
         "type": "internal_call_without_client"
       }
     ]
+  },
+  {
+    "pr": "pr-p04-scheduler-thread",
+    "vulnerabilities": [
+      {
+        "file_path": "app/jobs/cleanup.py",
+        "line": 6,
+        "type": "task_not_registered"
+      }
+    ]
+  },
+  {
+    "pr": "pr-p05-money-float",
+    "vulnerabilities": [
+      {
+        "file_path": "app/billing/invoice.py",
+        "line": 4,
+        "type": "money_as_float"
+      }
+    ]
+  },
+  {
+    "pr": "pr-p06-raw-exception",
+    "vulnerabilities": [
+      {
+        "file_path": "app/services/cart.py",
+        "line": 6,
+        "type": "raw_exception_leaked"
+      }
+    ]
+  },
+  {
+    "pr": "pr-p07-cachekey-concat",
+    "vulnerabilities": [
+      {
+        "file_path": "app/cache/session.py",
+        "line": 2,
+        "type": "cachekey_concatenated"
+      }
+    ]
   }
 ]

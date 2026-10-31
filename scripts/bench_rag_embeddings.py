@@ -51,10 +51,16 @@ TYPE_TO_RULE = {
     "route_not_registered": "SEC-010",
     "db_access_outside_repository": "SEC-011",
     "internal_call_without_client": "SEC-012",
+    "task_not_registered": "SEC-013",
+    "raw_exception_leaked": "SEC-014",
+    "money_as_float": "SEC-015",
+    "cachekey_concatenated": "SEC-016",
 }
 
 # BGE 中文官方推荐的检索指令前缀（query 侧，doc 侧不加）
 BGE_QUERY_PREFIX = "为这个句子生成表示以用于检索相关文章："
+# 判据对比必须用生产同款 top_k，否则标定表与实际链路对不上
+PROD_TOP_K = Settings(_env_file=None).retrieval_top_k
 THRESHOLD_SWEEP = [0.20, 0.30, 0.35, 0.40, 0.45, 0.50, 0.55]
 
 
@@ -250,7 +256,7 @@ def keep_absolute(sims: list[float], floor: float) -> list[int]:
 
 
 def keep_margin(sims: list[float], floor: float, delta: float,
-                top_k: int = 3) -> list[int]:
+                top_k: int = PROD_TOP_K) -> list[int]:
     """判据 2：绝对下限 + 与 top1 的差距。
 
     注意 top1 恒满足 `>= top1 - delta`，所以 margin 只能裁剪 tail，
@@ -262,7 +268,7 @@ def keep_margin(sims: list[float], floor: float, delta: float,
 
 
 def keep_spread(sims: list[float], floor: float, gap: float,
-                top_k: int = 3) -> list[int]:
+                top_k: int = PROD_TOP_K) -> list[int]:
     """判据 3：可判别性门限——top1 没明显甩开次名时判定"这次检索无指向性"，全拒。
 
     干净代码块的特征是所有条款分数挤在一起，正确命中的特征是赢家突出。
@@ -278,7 +284,7 @@ def keep_spread(sims: list[float], floor: float, gap: float,
 
 
 def keep_rerank(row: dict, rr: Reranker, rule_texts: list[str],
-                prob_floor: float, top_k: int = 3) -> list[int]:
+                prob_floor: float, top_k: int = PROD_TOP_K) -> list[int]:
     """判据 4：用 cross-encoder 的相关性概率做过滤（不只看排序）。"""
     ranked = sorted(range(len(row["sims"])), key=lambda i: -row["sims"][i])[:top_k]
     probs = rr.prob(row["query"], [rule_texts[i] for i in ranked])
@@ -286,7 +292,7 @@ def keep_rerank(row: dict, rr: Reranker, rule_texts: list[str],
 
 
 def keep_gate_margin(sims: list[float], floor: float, delta: float,
-                     top_k: int = 3) -> list[int]:
+                     top_k: int = PROD_TOP_K) -> list[int]:
     """判据 5（推荐）：门限只判 top1，入选只判与 top1 的差距。
 
     实测正确条款恒为 top1，所以该设计下漏召只会"漏成空结果"（prompt 声明无匹配、

@@ -66,6 +66,30 @@ VULN: list[dict] = [
                '    resp = requests.get(f"http://{host}:8080/quota", timeout=3)\n'
                "    return resp.json()\n"},
      "gt": [("app/services/report.py", 5, "internal_call_without_client")]},
+    {"pr": "pr-p04-scheduler-thread",
+     "files": {"app/jobs/cleanup.py":
+               "import threading\nimport time\n\n\ndef start_cleanup():\n"
+               "    threading.Thread(target=_loop, daemon=True).start()\n\n\n"
+               "def _loop():\n    while True:\n        purge_old_rows()\n"
+               "        time.sleep(3600)\n"},
+     "gt": [("app/jobs/cleanup.py", 6, "task_not_registered")]},
+    {"pr": "pr-p05-money-float",
+     "files": {"app/billing/invoice.py":
+               "def calc_total(items):\n    total = 0.0\n    for it in items:\n"
+               "        total += it.price * it.qty\n    return round(total, 2)\n"},
+     "gt": [("app/billing/invoice.py", 4, "money_as_float")]},
+    {"pr": "pr-p06-raw-exception",
+     "files": {"app/services/cart.py":
+               "COUPONS = {}\n\n\ndef apply_coupon(code):\n"
+               "    if code not in COUPONS:\n"
+               '        raise RuntimeError("coupon not found")\n'
+               "    return COUPONS[code]\n"},
+     "gt": [("app/services/cart.py", 6, "raw_exception_leaked")]},
+    {"pr": "pr-p07-cachekey-concat",
+     "files": {"app/cache/session.py":
+               "def session_key(user_id, tenant):\n"
+               '    return f"session:{tenant}:{user_id}"\n'},
+     "gt": [("app/cache/session.py", 2, "cachekey_concatenated")]},
 ]
 
 CLEAN: list[tuple[str, dict[str, str]]] = [
