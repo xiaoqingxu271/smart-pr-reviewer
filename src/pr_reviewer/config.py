@@ -25,7 +25,8 @@ class Settings(BaseSettings):
     llm_max_retries: int = 3
 
     # Embedding（PRD §5.3 禁止 Chroma 默认 MiniLM；选型与阈值实证见
-    # experiments/rag-embedding-bench.md：bge-base-zh-v1.5 + query 指令前缀 R@1=1.00）
+    # experiments/rag-embedding-bench.md：bge-base-zh-v1.5 + query 检索指令前缀，
+    # 在生产截断位 recall@5 = 1.00（无前缀 0.94；注意其 R@1 反而更高，选型必须看操作点））
     embedding_backend: str = "local"      # local | ollama | openai | hash
     embedding_model: str = "BAAI/bge-base-zh-v1.5"
     # BGE-zh 官方的非对称检索指令，只加在 query 侧（doc 侧不加）。
@@ -37,16 +38,13 @@ class Settings(BaseSettings):
     chunk_token_limit: int = 3000       # 巨函数二级切分阈值（PRD §5.2）
     # 检索过滤（PRD §5.3）：threshold 判 top1——"这次检索到底有没有指向"；
     # margin 判尾部——"还有哪些条款和冠军属于同一个答案"。
-    # top_k 不是越小越好：它要覆盖"正确答案在语料里被挤出前几名"的情况。
-    # 实测 7 条款时 top_k=3 全命中，扩到 12 条款后 SEC-010 掉到第 5 名被截断
-    # （可追溯率 12/13），抬到 5 才恢复 13/13——所以 top_k 得随语料规模复核。
+    # 0.45/0.05 是「条款带典型违规示例 + bge-base-zh-v1.5 + 检索前缀」在 17 条款 /
+    # 17 个漏洞块 + 15 个干净块上的标定值：正确条款 min 0.460、干净块 top1 median 0.471。
+    # top_k 不是越小越好——它要覆盖"正确条款被挤出前几名"的情况：7 条款时 top_k=3 够用，
+    # 12 条款时 SEC-010 掉到第 5 名被截断，抬到 5 才恢复全命中。
+    # 换 embedding 模型或改规范文档都必须重跑 scripts/bench_rag_embeddings.py 重标定，
+    # 并用 scripts/check_retrieval.py 复核（0.45 与最弱正确条款只差 0.01，没有余量）。
     retrieval_top_k: int = 5
-    # 检索过滤（PRD §5.3）：threshold 判 top1——"这次检索到底有没有指向"；
-    # margin 判尾部——"还有哪些条款和冠军属于同一个答案"。
-    # 0.45/0.05 是「条款带典型违规示例 + bge-base-zh-v1.5 + 检索前缀」在 10 个漏洞块 /
-    # 15 个干净块上的标定值（正确条款 min 0.460，干净块 top1 median 0.463）。
-    # 注意 0.45 与最弱正确条款只差 0.01：改规范文档或换 embedding 模型都必须重跑
-    # scripts/bench_rag_embeddings.py 重标定，并用 scripts/check_retrieval.py 复核。
     retrieval_score_threshold: float = 0.45
     retrieval_margin: float = 0.05
     review_max_retries: int = 2

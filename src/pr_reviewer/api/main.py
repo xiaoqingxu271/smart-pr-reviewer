@@ -27,7 +27,7 @@ from pr_reviewer.report import render_markdown
 from pr_reviewer.sources import RepoNotAllowed, fetch_diff, load_contents
 from pr_reviewer.store import ResultCache, TaskStore
 from pr_reviewer.tasks import QueueFull, TaskRunner
-from pr_reviewer.webhooks import parse_webhook
+from pr_reviewer.webhooks import WebhookPayloadInvalid, WebhookRejected, parse_webhook
 
 GENERIC_FAILURE = "审查未完成：服务端内部错误，请携带 review_id 联系管理员"
 
@@ -148,8 +148,10 @@ def create_app(settings: Settings | None = None, llm=None, retriever=None,
             review = parse_webhook(settings.webhook_secret, raw,
                                    request.headers.get("x-hub-signature-256"),
                                    request.headers.get("x-github-event"))
-        except ValueError:
+        except WebhookRejected:
             raise HTTPException(403, "签名校验失败") from None
+        except WebhookPayloadInvalid as exc:
+            raise HTTPException(400, str(exc)) from exc
         if review is None:
             return {"ignored": True}
         if not _publisher():

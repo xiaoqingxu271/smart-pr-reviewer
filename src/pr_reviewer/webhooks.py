@@ -49,13 +49,27 @@ def parse_pull_request_event(event: str | None, body: dict) -> ReviewRequest | N
                          post_comments=True)
 
 
+class WebhookRejected(ValueError):
+    """签名缺失/不匹配：调用方不可信 → 403。"""
+
+
+class WebhookPayloadInvalid(ValueError):
+    """签名有效但内容解析不了（最常见是 Content type 配成了 form-urlencoded）→ 400。
+
+    这两类必须分开报：都返回"签名校验失败"会把人引向去查密钥，
+    而真正的问题是仓库 webhook 设置里的 Content type。
+    """
+
+
 def parse_webhook(secret: str, raw: bytes, signature: str | None,
                   event: str | None) -> ReviewRequest | None:
-    """验签 → 解析。签名不对抛 ValueError（调用方转 403）。"""
+    """验签 → 解析。签名不对抛 WebhookRejected，内容坏抛 WebhookPayloadInvalid。"""
     if not verify_signature(secret, raw, signature):
-        raise ValueError("invalid webhook signature")
+        raise WebhookRejected("invalid webhook signature")
     try:
         body = json.loads(raw)
     except (ValueError, UnicodeDecodeError) as exc:
-        raise ValueError("webhook payload is not valid JSON") from exc
+        raise WebhookPayloadInvalid(
+            "webhook payload 不是合法 JSON（检查 GitHub webhook 的 Content type "
+            "是否为 application/json）") from exc
     return parse_pull_request_event(event, body)

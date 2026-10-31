@@ -265,6 +265,12 @@ def test_webhook_verifies_signature_then_queues_and_publishes(env):
                                 "x-hub-signature-256": signed(closed)}).json() == {
                            "ignored": True}
 
+    # Content type 配成 form-urlencoded：签名是对的，所以不能报 403 把人引去查密钥
+    form = b"action=opened"
+    resp = client.post("/webhook/github", content=form,
+                       headers={**headers, "x-hub-signature-256": signed(form)})
+    assert resp.status_code == 400 and "Content type" in resp.json()["detail"]
+
     ok = client.post("/webhook/github", content=body, headers=headers)
     assert ok.status_code == 200 and ok.json()["status"] == "queued"
     detail = wait_for_state(client, ok.json()["review_id"])
