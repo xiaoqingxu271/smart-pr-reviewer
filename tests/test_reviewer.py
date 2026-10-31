@@ -1,12 +1,10 @@
 """M4 测试：重试链、prompt 构造、幻觉校验、合并去重。全部使用 Fake LLM 离线运行。"""
-import pytest
 from pydantic import BaseModel
 
 from pr_reviewer.config import Settings
 from pr_reviewer.llm.base import LLMBackend, LLMOutputError, LLMUnavailableError
 from pr_reviewer.models import CodeChunk, CodeReviewIssue, RuleHit
-from pr_reviewer.reviewer import (NO_RULES_DECLARATION, ChunkReviewer, RetrievalCounter,
-                                  merge_issues)
+from pr_reviewer.reviewer import NO_RULES_DECLARATION, ChunkReviewer, RetrievalCounter, merge_issues
 
 CHUNK = CodeChunk(
     file_path="app/auth.py", start_line=10, end_line=20, symbol="login",
@@ -137,9 +135,9 @@ def test_hallucination_filtering():
 
 
 def test_merge_issues_dedup_and_sort():
-    mk = lambda ln, risk, desc, itype="security": CodeReviewIssue(
-        file_path="a.py", line_number=ln, issue_type=itype, risk_level=risk,
-        issue_description=desc, suggestion="s")
+    def mk(ln, risk, desc, itype="security"):
+        return CodeReviewIssue(file_path="a.py", line_number=ln, issue_type=itype,
+                               risk_level=risk, issue_description=desc, suggestion="s")
     merged = merge_issues([
         mk(10, "low", "短描述"),
         mk(12, "low", "重复问题的更详细描述，应当保留", "security"),  # 与上行同类同位置

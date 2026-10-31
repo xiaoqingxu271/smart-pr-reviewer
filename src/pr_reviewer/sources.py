@@ -6,13 +6,14 @@
 from __future__ import annotations
 
 import base64
+import contextlib
+import warnings
 from pathlib import Path
 from urllib.parse import quote
 
 import httpx
 
-from pr_reviewer.diff_extractor import DiffResult, file_change_from_patch, parse_unified_diff
-from pr_reviewer.models import ChangeType
+from pr_reviewer.diff_extractor import DiffResult, parse_unified_diff
 
 TIMEOUT = 30
 
@@ -28,7 +29,8 @@ def assert_local_repo_allowed(repo_path: str, settings) -> None:
     仓库并把内容送去 LLM"的能力开放给了每个调用方。报错文案只说怎么才能被允许，
     不回显路径、不暴露异常细节。
     """
-    roots = [Path(p).resolve() for p in settings.allowed_repo_roots.split(",") if p.strip()]
+    roots = [Path(p).resolve() for p in
+             (getattr(settings, "allowed_repo_roots", "") or "").split(",") if p.strip()]
     if not roots:
         raise RepoNotAllowed("本地仓库审查未开放：需服务管理员配置 ALLOWED_REPO_ROOTS")
     target = Path(repo_path).resolve()
@@ -52,10 +54,9 @@ def load_contents_local(repo_path: str, head_branch: str, paths: list[str]) -> d
     tree = repo.commit(head_branch).tree
     contents = {}
     for p in paths:
-        try:
-            contents[p] = tree[p].data_stream.read().decode()
-        except (git.GitCommandError, KeyError):
-            pass  # 文件在 head 不存在（如纯重命名边界），跳过
+        with contextlib.suppress(git.GitCommandError, KeyError):
+            # 该 ref 下不存在这个路径（纯删除、重命名边界等）→ 跳过
+            contents[p] = decode_source(tree[p].data_stream.read())
     return contents
 
 
@@ -88,7 +89,7 @@ def load_contents_github(repo_url: str, ref: str, paths: list[str]) -> dict[str,
         for p in paths:
             resp = client.get(f"/repos/{owner_repo}/contents/{p}", params={"ref": ref})
             if resp.is_success:
-                contents[p] = base64.b64decode(resp.json()["content"]).decode("utf-8")
+                contents[p] = decode_source(base64.b64decode(resp.json()["content"]))
     return contents
 
 
@@ -128,7 +129,108 @@ def load_contents_gitlab(repo_url: str, ref: str, paths: list[str]) -> dict[str,
                 f"{base}/api/v4/projects/{project}/repository/files/{quote(p, safe='')}/raw",
                 params={"ref": ref})
             if resp.is_success:
-                contents[p] = resp.text
+                contents[p] = decode_source(resp.content)
+    return contents
+
+
+def decode_source(raw: bytes) -> str:
+    """源码字节 → 文本。
+
+    直接 `bytes.decode()`（UTF-8 严格模式）会踩两个坑：中文团队的源码文件常是
+    GBK/GB18030，抛 UnicodeDecodeError；而调用方一旦 catch 掉这个异常，该文件就
+    **静默离开审查范围**——审查工具漏审比报错更危险。所以依次尝试 UTF-8 →
+    GB18030，最后才用 replace 兜住（保证一定有内容可审，且不丢文件）。
+    """
+    for encoding in ("utf-8", "gb18030"):
+        try:
+            return raw.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    return raw.decode("utf-8", errors="replace")
+
+
+# ---------------------------------------------------------------- 浅取克隆
+
+def _credentialed_url(repo_url: str) -> str:
+    """把 token 拼进克隆地址。返回值含凭据，**绝不参与日志与异常文本**。"""
+    import os
+    if "github.com" in repo_url:
+        token = os.environ.get("GITHUB_TOKEN", "")
+    else:
+        token = os.environ.get("GITLAB_TOKEN", "")
+    if not token:
+        return repo_url
+    scheme, _, rest = repo_url.partition("://")
+    return f"{scheme}://oauth2:{token}@{rest}" if rest else repo_url
+
+
+def _refspecs(repo_url: str, pr_number: int) -> list[str]:
+    """平台约定的 PR/MR 头引用；GitHub 用 refs/pull，GitLab 用 refs/merge-requests。"""
+    if "github.com" in repo_url:
+        return [f"refs/pull/{pr_number}/head"]
+    return [f"refs/merge-requests/{pr_number}/head"]
+
+
+def read_tree_files(repo, paths: list[str]) -> dict[str, str]:
+    """从 git 对象库读 blob，而不是读 checkout 出来的工作区文本。
+
+    两个理由：① 工作区会被 `core.autocrlf` 等过滤器改写行尾，Windows 默认就踩，
+    于是送去审查的内容和 diff 的行号口径不一致；② diff 里的路径是外部可控输入，
+    限定在仓库树内查找，绝对路径与 `..` 直接丢弃。
+    """
+    tree = repo.commit("FETCH_HEAD").tree
+    contents: dict[str, str] = {}
+    for p in paths:
+        path = Path(p)
+        if path.is_absolute() or ".." in path.parts:          # 越界路径：丢弃
+            continue
+        try:
+            blob = tree[path.as_posix()]
+        except KeyError:
+            continue                                          # 该 ref 下不存在（纯删除等）
+        if blob is None or blob.type != "blob":
+            continue
+        contents[p] = decode_source(blob.data_stream.read())
+    return contents
+
+
+def load_contents_clone(request, head_ref: str, paths: list[str]) -> dict[str, str]:
+    """一次 fetch 取到 PR 头，再从 git 对象库读全部文件内容（不 checkout 工作区）。
+
+    为什么要换掉逐文件 contents 接口：一个 30 文件的 PR 要发 30 次请求，未认证时
+    GitHub 限额 60 次/小时——一个 PR 就能把额度吃光，第二个 PR 直接失败。
+    """
+    import tempfile
+
+    import git
+
+    url = _credentialed_url(request.repo_url)
+    refs = _refspecs(request.repo_url, request.pr_number) + ([head_ref] if head_ref else [])
+    with tempfile.TemporaryDirectory(prefix="pr-reviewer-") as tmp:
+        repo = git.Repo.init(Path(tmp) / "repo")
+        contents: dict[str, str] | None = None
+        last_error: Exception | None = None
+        try:
+            repo.create_remote("origin", url)
+            for ref in refs:
+                # 先试 shallow（省带宽），不支持时退回普通 fetch——本地仓库/老服务端的
+                # file:// 传输经常不接受 --depth，不能因此让整个 PR 审不了
+                for args in (["--depth", "1", "origin", ref], ["origin", ref]):
+                    try:
+                        repo.git.fetch(*args)
+                    except git.GitCommandError as exc:
+                        last_error = exc
+                        continue
+                    contents = read_tree_files(repo, paths)
+                    break
+                if contents is not None:
+                    break
+        finally:
+            # Windows 上不 close 会留文件句柄，临时目录删不掉并在 __exit__ 抛
+            # PermissionError；因为 return 还在 with 里，异常会把已经读好的内容一起吞掉
+            repo.close()
+    if contents is None:
+        raise RuntimeError(f"浅取克隆失败（{type(last_error).__name__}）") from last_error
     return contents
 
 
@@ -158,6 +260,12 @@ def load_contents(request, head_ref: str, paths: list[str], settings=None) -> di
         if settings is not None:
             assert_local_repo_allowed(request.repo_path, settings)
         return load_contents_local(request.repo_path, head_ref, paths)
+    if settings is None or settings.use_clone_fetch:
+        try:
+            return load_contents_clone(request, head_ref, paths)
+        except Exception as exc:  # noqa: BLE001 — 取不到就退回逐文件接口（处处可降级）
+            warnings.warn(f"浅取克隆失败，退回逐文件接口：{type(exc).__name__}",
+                          RuntimeWarning, stacklevel=2)
     if "github.com" in request.repo_url:
         return load_contents_github(request.repo_url, head_ref, paths)
     return load_contents_gitlab(request.repo_url, head_ref, paths)

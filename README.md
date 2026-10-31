@@ -28,8 +28,12 @@ curl -X POST localhost:8000/review \
   -d '{"mode":"api","repo_url":"https://github.com/you/repo","pr_number":12}'
 curl localhost:8000/review/<review_id> -H "Authorization: Bearer dev-local-8f3c21a9"
 
-# 6. 测试
+# 6. 测试（全离线：embedding 用确定性 hash，LLM 用 FakeLLM，不联网不花钱）
 pytest
+
+# 7. 静态检查（CI 里跑的就是这两条）
+ruff check .
+mypy
 ```
 
 ## 目录结构

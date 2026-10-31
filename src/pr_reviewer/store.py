@@ -80,7 +80,8 @@ class TaskStore:
     def update(self, task_id: str, *, status: str | None = None, result: dict | None = None,
                report: str | None = None, error: str | None = None, cached: bool = False,
                ) -> None:
-        sets, values = ["updated_at = ?"], [time.time()]
+        sets: list[str] = ["updated_at = ?"]
+        values: list[object] = [time.time()]
         for column, value in (("status", status), ("report", report), ("error", error)):
             if value is not None:
                 sets.append(f"{column} = ?")
@@ -109,6 +110,12 @@ class TaskStore:
             "created_at": row[6], "updated_at": row[7],
         }
 
+    def delete(self, task_id: str) -> None:
+        """受理失败时回滚记录，不给调用方留一条永远不动的 queued 任务。"""
+        with self._lock:
+            self._conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+            self._conn.commit()
+
     def conn_ok(self) -> bool:
         """健康检查用：连接活着且可读（PRD §6.1 /health）。"""
         return self._conn.execute("SELECT 1").fetchone()[0] == 1
@@ -133,7 +140,7 @@ class ResultCache:
 
     @staticmethod
     def make_key(diff_text: str, head_ref: str = "") -> str:
-        return hashlib.sha256(f"{head_ref}\n{diff_text}".encode("utf-8")).hexdigest()
+        return hashlib.sha256(f"{head_ref}\n{diff_text}".encode()).hexdigest()
 
     def get(self, key: str) -> dict | None:
         row = self._conn.execute(

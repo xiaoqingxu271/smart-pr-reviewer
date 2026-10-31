@@ -23,10 +23,13 @@ import re
 import time
 import warnings
 from pathlib import Path
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from pr_reviewer.config import Settings
 from pr_reviewer.models import RuleHit
+
+if TYPE_CHECKING:      # 仅为类型标注引入，运行时保持延迟导入
+    from openai import OpenAI
 
 RULE_HEADER = re.compile(r"^##\s+(SEC-\d{3,})\s+(.*)$")
 _WORD = re.compile(r"[a-zA-Z0-9_]+")
@@ -182,7 +185,7 @@ class OpenAIEmbedder:
         self.model, self.base_url, self.api_key = model, base_url, api_key
         self.name = f"openai:{model}"
         self.query_prefix = query_prefix
-        self._client = None
+        self._client: OpenAI | None = None
 
     def _ensure_client(self):
         if self._client is None:
@@ -248,7 +251,8 @@ class InMemoryStore:
 
     def add(self, ids, embeddings, documents, metadatas) -> None:
         self._items.extend({"id": i, "embedding": e, "document": d, "metadata": m}
-                           for i, e, d, m in zip(ids, embeddings, documents, metadatas))
+                           for i, e, d, m in zip(ids, embeddings, documents, metadatas,
+                                                 strict=True))
         self._flush()
 
     def all(self) -> list[dict]:
@@ -274,9 +278,17 @@ class ChromaStore:
 
     def all(self) -> list[dict]:
         got = self._col.get(include=["documents", "metadatas", "embeddings"])
+
+        def unpack(value):
+            """这些键在类型上可能是 None（未 include），但**不能用 `or []` 兜**：
+            Chroma 返回的是 numpy 数组，对空数组求布尔值会抛
+            ValueError: truth value of an empty array is ambiguous。只能判 is None。"""
+            return [] if value is None else list(value)
+
         return [{"id": i, "embedding": e, "document": d, "metadata": m}
-                for i, e, d, m in zip(got["ids"], got["embeddings"],
-                                      got["documents"], got["metadatas"])]
+                for i, e, d, m in zip(unpack(got["ids"]), unpack(got["embeddings"]),
+                                      unpack(got["documents"]), unpack(got["metadatas"]),
+                                      strict=True)]
 
 
 def make_store(settings: Settings) -> VectorStore:
@@ -291,7 +303,9 @@ def make_store(settings: Settings) -> VectorStore:
 # ---------------------------------------------------------------- 检索器
 
 def _cosine(a: list[float], b: list[float]) -> float:
-    dot = sum(x * y for x, y in zip(a, b))
+    # strict=True：维度不一致说明索引里混进了不同 embedding 模型的向量，
+    # 静默按短的算会得到一个"看着正常"的错误分数
+    dot = sum(x * y for x, y in zip(a, b, strict=True))
     na = math.sqrt(sum(x * x for x in a)) or 1.0
     nb = math.sqrt(sum(y * y for y in b)) or 1.0
     return dot / (na * nb)

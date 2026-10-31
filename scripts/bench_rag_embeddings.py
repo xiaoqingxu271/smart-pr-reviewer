@@ -29,10 +29,10 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from pr_reviewer.config import Settings  # noqa: E402
-from pr_reviewer.pipeline import _select_chunks  # noqa: E402
-from pr_reviewer.rag import HashEmbedder, _cosine, parse_standards_md  # noqa: E402
-from run_eval import FIXTURES, load_pr_dir  # noqa: E402
+from pr_reviewer.config import Settings
+from pr_reviewer.pipeline import _select_chunks
+from pr_reviewer.rag import HashEmbedder, _cosine, parse_standards_md
+from run_eval import FIXTURES, load_pr_dir
 
 GT_PATH = ROOT / "tests" / "ground_truth.json"
 STANDARDS = ROOT / "docs" / "研发代码安全规范.md"
@@ -205,7 +205,8 @@ def evaluate(embedder, samples: list[dict], rules: list[dict],
         "correct_scores": sorted(correct_scores),
         "wrong_top1": sorted(wrong_top1),
         "ranks": ranks,
-        "details": [(s["pr"], s["expected"], r) for s, r in zip(samples, ranks)],
+        "details": [(s["pr"], s["expected"], r)
+                    for s, r in zip(samples, ranks, strict=True)],
     }
 
 
@@ -278,7 +279,7 @@ def keep_rerank(row: dict, rr: Reranker, rule_texts: list[str],
     """判据 4：用 cross-encoder 的相关性概率做过滤（不只看排序）。"""
     ranked = sorted(range(len(row["sims"])), key=lambda i: -row["sims"][i])[:top_k]
     probs = rr.prob(row["query"], [rule_texts[i] for i in ranked])
-    return [i for i, p in zip(ranked, probs) if p >= prob_floor]
+    return [i for i, p in zip(ranked, probs, strict=True) if p >= prob_floor]
 
 
 def keep_gate_margin(sims: list[float], floor: float, delta: float,
@@ -375,7 +376,7 @@ def main() -> None:
     # ---- 输出 markdown
     md = ["# RAG 检索质量基准：本地 embedding 选型实证", "",
           f"- 规范库：`{STANDARDS.name}`，{len(rules)} 条款（随机基线 R@3 = {3 / len(rules):.0%}）",
-          f"- query：**生产真实分布**——fixture 经 `_select_chunks` 分块后的代码块内容（非人工混写查询）",
+          "- query：**生产真实分布**——fixture 经 `_select_chunks` 分块后的代码块内容（非人工混写查询）",
           f"- 正样本 {len(covered)} 条；负样本 {len(neg_texts)} 个干净 PR 送审块；"
           f"另有 {len(uncovered)} 条漏洞类型规范库未覆盖",
           "", "## 档位对比", "",

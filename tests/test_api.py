@@ -7,6 +7,8 @@
 - 失败时给调用方友好文案，异常细节只进日志。
 """
 import json
+import threading
+import time
 
 import pytest
 from fastapi.testclient import TestClient
@@ -37,6 +39,20 @@ REQUEST = {"mode": "local", "repo_path": "/srv/repos/app",
            "base_branch": "main", "head_branch": "feat"}
 
 
+def wait_for_state(client, task_id, want="completed", timeout=15.0) -> dict:
+    """任务现在是真后台执行（有界线程池），不像 BackgroundTasks 那样在下一次请求前
+    保证跑完——所以测试也按真实客户端的方式轮询，这本来就是 API 契约的一部分。
+    """
+    deadline = time.time() + timeout
+    detail = {}
+    while time.time() < deadline:
+        detail = client.get(f"/review/{task_id}", headers=AUTH).json()
+        if detail["status"] == want:
+            return detail
+        time.sleep(0.05)
+    return detail
+
+
 @pytest.fixture
 def env(tmp_path, monkeypatch):
     """返回 (make_app, state)：make_app 可再开实例（验跨实例持久化），state 控制数据源。"""
@@ -57,12 +73,13 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr(main_mod, "fetch_diff", fake_fetch)
     monkeypatch.setattr(main_mod, "load_contents", fake_contents)
 
-    def make_app(script=None, token=TOKEN):
+    def make_app(script=None, token=TOKEN, llm=None, **settings_kw):
         settings = Settings(_env_file=None, chroma_dir=tmp_path / ".chroma",
                             reports_dir=tmp_path / "reports",
                             db_path=tmp_path / ".data" / "reviews.sqlite3",
-                            embedding_backend="hash", api_token=token)
-        app = create_app(settings, llm=ScriptLLM(script or list(SCRIPT), usage=7),
+                            embedding_backend="hash", api_token=token, **settings_kw)
+        app = create_app(settings,
+                         llm=llm or ScriptLLM(script or list(SCRIPT), usage=7),
                          retriever=None)
         return TestClient(app)
 
@@ -77,7 +94,7 @@ def test_submit_poll_report(env):
     task_id = resp.json()["review_id"]
     assert resp.json()["status"] == "queued"
 
-    detail = client.get(f"/review/{task_id}", headers=AUTH).json()
+    detail = wait_for_state(client, task_id)
     assert detail["status"] == "completed"
     assert detail["result"]["summary"] == "a.py 存在硬编码密钥。"
     assert detail["result"]["token_usage"] == 7
@@ -122,9 +139,9 @@ def test_task_state_survives_new_app_instance(env):
     task_id = make_app().post("/review", json=REQUEST, headers=AUTH).json()["review_id"]
 
     other = make_app()                                    # 新实例、新连接、同一 SQLite 文件
-    detail = other.get(f"/review/{task_id}", headers=AUTH)
-    assert detail.status_code == 200
-    assert detail.json()["result"]["summary"] == "a.py 存在硬编码密钥。"
+    detail = wait_for_state(other, task_id)
+    assert detail["status"] == "completed"
+    assert detail["result"]["summary"] == "a.py 存在硬编码密钥。"
     assert other.get(f"/review/{task_id}/report", headers=AUTH).status_code == 200
 
 
@@ -132,11 +149,12 @@ def test_cache_hit_on_identical_diff(env):
     make_app, _ = env
     client = make_app(script=list(SCRIPT))
     first = client.post("/review", json=REQUEST, headers=AUTH).json()
-    assert client.get(f"/review/{first['review_id']}", headers=AUTH).json()["cached"] is False
+    # 等第一次真正写完缓存，否则测的是竞态不是命中
+    assert wait_for_state(client, first["review_id"])["cached"] is False
 
     second = client.post("/review", json=REQUEST, headers=AUTH).json()
     assert second["status"] == "queued"                   # 命中与否在任务态里体现
-    detail2 = client.get(f"/review/{second['review_id']}", headers=AUTH).json()
+    detail2 = wait_for_state(client, second["review_id"])
     assert detail2["cached"] is True
     assert detail2["result"]["summary"] == "a.py 存在硬编码密钥。"
 
@@ -152,11 +170,10 @@ def test_force_push_does_not_return_stale_report(env):
     client = make_app(script=SCRIPT_TWICE)
 
     first = client.post("/review", json=REQUEST, headers=AUTH).json()
-    assert client.get(f"/review/{first['review_id']}", headers=AUTH).json()["status"] \
-        == "completed"
+    assert wait_for_state(client, first["review_id"])["status"] == "completed"
 
     second = client.post("/review", json=REQUEST, headers=AUTH).json()
-    detail2 = client.get(f"/review/{second['review_id']}", headers=AUTH).json()
+    detail2 = wait_for_state(client, second["review_id"])
     assert detail2["status"] == "completed", detail2.get("error")
     assert detail2["cached"] is False, "diff 内容变了却命中缓存 → 会返回上一版结论"
     assert state["fetches"] == 2
@@ -169,11 +186,41 @@ def test_task_failure_returns_friendly_message(env):
     state["boom"] = RuntimeError("connect to db://user:pw@host failed token=abc123")
 
     task_id = client.post("/review", json=REQUEST, headers=AUTH).json()["review_id"]
-    detail = client.get(f"/review/{task_id}", headers=AUTH).json()
+    detail = wait_for_state(client, task_id, "failed")
     assert detail["status"] == "failed"
     assert "内部错误" in detail["error"]
     assert "abc123" not in detail["error"] and "pw" not in detail["error"]
     assert client.get(f"/review/{task_id}/report", headers=AUTH).status_code == 409
+
+
+def test_overload_rejects_cleanly_instead_of_drowning(env):
+    """待处理满员时拒绝得干脆（可重试 429），而不是把线程池占满让所有请求一起变慢。"""
+    make_app, _ = env
+    gate = threading.Event()
+
+    class BlockingLLM(ScriptLLM):
+        def chat_structured(self, system, user, schema):
+            gate.wait(timeout=15)
+            return super().chat_structured(system, user, schema)
+
+    client = make_app(llm=BlockingLLM(list(SCRIPT), usage=7), max_pending_reviews=1)
+    first = client.post("/review", json=REQUEST, headers=AUTH)
+    assert first.status_code == 200
+
+    second = client.post("/review", json=REQUEST, headers=AUTH)
+    assert second.status_code == 429
+    assert "稍后重试" in second.json()["detail"]
+    assert client.get("/health").json()["load"]["rejected_total"] == 1
+
+    gate.set()
+    task_id = first.json()["review_id"]
+    for _ in range(80):
+        detail = client.get(f"/review/{task_id}", headers=AUTH).json()
+        if detail["status"] == "completed":
+            break
+        time.sleep(0.05)
+    assert detail["status"] == "completed"
+    assert detail["result"]["summary"] == "a.py 存在硬编码密钥。"
 
 
 def test_local_repo_path_whitelist_enforced():

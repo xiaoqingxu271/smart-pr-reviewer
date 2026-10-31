@@ -13,8 +13,9 @@
 from __future__ import annotations
 
 import uuid
+from contextlib import asynccontextmanager
 
-from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.responses import PlainTextResponse
 
 from pr_reviewer.config import Settings, get_settings
@@ -24,13 +25,21 @@ from pr_reviewer.pipeline import run_review
 from pr_reviewer.report import render_markdown
 from pr_reviewer.sources import RepoNotAllowed, fetch_diff, load_contents
 from pr_reviewer.store import ResultCache, TaskStore
+from pr_reviewer.tasks import QueueFull, TaskRunner
 
 GENERIC_FAILURE = "审查未完成：服务端内部错误，请携带 review_id 联系管理员"
 
 
 def create_app(settings: Settings | None = None, llm=None, retriever=None) -> FastAPI:
     settings = settings or get_settings()
-    app = FastAPI(title="PR Smart Reviewer", version="0.1.0")
+    runner = TaskRunner(settings.max_concurrent_reviews, settings.max_pending_reviews)
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        yield
+        runner.shutdown(wait=False)          # 进程退出别让孤儿线程继续打 LLM
+
+    app = FastAPI(title="PR Smart Reviewer", version="0.1.0", lifespan=lifespan)
     store = TaskStore(settings.db_path)
     cache = ResultCache(settings.db_path, settings.cache_ttl_hours)
 
@@ -89,10 +98,14 @@ def create_app(settings: Settings | None = None, llm=None, retriever=None) -> Fa
                         task_id, type(exc).__name__, str(exc)[:300])
 
     @app.post("/review", dependencies=[Depends(require_token)])
-    def submit_review(request: ReviewRequest, background: BackgroundTasks):
+    def submit_review(request: ReviewRequest):
         task_id = uuid.uuid4().hex[:12]
         store.create(task_id, request.model_dump(exclude_none=True))
-        background.add_task(_run_task, task_id, request)
+        try:
+            runner.submit(_run_task, task_id, request)
+        except QueueFull as exc:
+            store.delete(task_id)            # 不留一条永远不会动的 queued 记录
+            raise HTTPException(429, str(exc)) from exc
         return {"review_id": task_id, "status": "queued"}
 
     @app.get("/review/{task_id}", dependencies=[Depends(require_token)])
@@ -117,7 +130,7 @@ def create_app(settings: Settings | None = None, llm=None, retriever=None) -> Fa
         probe = {"llm_backend": settings.llm_backend, "llm": None, "rag": None,
                  "auth_configured": bool(settings.api_token),
                  "local_mode_allowed": bool(settings.allowed_repo_roots.strip()),
-                 "db": None}
+                 "load": runner.stats, "db": None}
         try:
             probe["llm"] = _llm().health()
         except Exception as exc:  # noqa: BLE001

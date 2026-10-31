@@ -1,5 +1,4 @@
 """分块测试（PRD §5.2）：AST 边界完整性 + 降级链 + changed_lines 附着。"""
-import pytest
 
 from pr_reviewer.chunker import chunk_file, split_oversized_chunk
 

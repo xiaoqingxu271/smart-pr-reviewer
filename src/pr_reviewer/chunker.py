@@ -195,12 +195,12 @@ def split_oversized_chunk(chunk: CodeChunk, token_limit: int) -> list[CodeChunk]
         s, e = node.lineno, node.end_lineno or node.lineno
         size = len("\n".join(lines[s - 1:e])) + 1
         if cur_start is not None and cur_size + size > budget:
-            groups.append((cur_start, cur_end))
+            groups.append((cur_start, cur_end or cur_start))
             cur_start, cur_size = None, 0
         cur_start = s if cur_start is None else cur_start
         cur_end, cur_size = e, cur_size + size
     if cur_start is not None:
-        groups.append((cur_start, cur_end))
+        groups.append((cur_start, cur_end or cur_start))
 
     return [
         CodeChunk(

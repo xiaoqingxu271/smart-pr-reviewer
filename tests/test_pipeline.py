@@ -3,6 +3,7 @@
 added 文件全行视为变更（含 import 的 <module> 块也送审），脚本条数须与
 实际送审块数 + 1 次汇总调用对齐。
 """
+from pr_reviewer import pipeline as pipeline_mod
 from pr_reviewer.config import Settings
 from pr_reviewer.diff_extractor import DiffResult
 from pr_reviewer.llm.base import LLMOutputError
@@ -194,3 +195,48 @@ def test_report_declares_empty_retrieval_as_friendly_state():
     assert result.retrieval.chunks_with_rules == 0
     md = render_markdown(result)
     assert "未匹配到内部规范条款" in md and "check_retrieval" in md
+
+
+class FakeTime:
+    """可控时钟：让"超时"这条路径可确定复现，而不是靠 sleep 碰运气。"""
+
+    def __init__(self):
+        self.now = 0.0
+
+    def time(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.now += seconds
+
+
+def test_deadline_returns_partial_result_and_marks_it(monkeypatch):
+    """超预算必须只返回已审部分并显式标记：静默不完整比不完整更危险。"""
+    clock = FakeTime()
+    monkeypatch.setattr(pipeline_mod, "time", clock)
+
+    class SlowLLM:
+        token_usage = 0
+
+        def __init__(self):
+            self.chunks_reviewed = 0
+
+        def chat_structured(self, system, user, schema):
+            if schema.__name__ == "SummaryOutput":
+                return schema.model_validate({"summary": "部分结论"})
+            self.chunks_reviewed += 1
+            clock.now += 500                     # 每审一块消耗 500 秒
+            return schema.model_validate({"issues": []})
+
+    three_funcs = ("def a():\n    return 1\n\n\ndef b():\n    return 2\n\n\n"
+                   "def c():\n    return 3\n")
+    llm = SlowLLM()
+    result = run_review(Settings(_env_file=None, review_deadline_seconds=600),
+                        make_diff([FileChange(file_path="x.py", change_type="added",
+                                              changed_lines=list(range(1, 10)))]),
+                        {"x.py": three_funcs}, llm, None)
+
+    assert llm.chunks_reviewed == 2               # 第三块被预算挡下
+    assert result.deadline_exceeded is True
+    assert result.summary == "部分结论"
+    assert "⏳" in render_markdown(result)         # 报告里必须看得见"只审了部分"

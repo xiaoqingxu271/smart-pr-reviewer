@@ -33,6 +33,9 @@ def render_markdown(result: PRReviewResult) -> str:
             lines += ["> ℹ️ 本次未匹配到内部规范条款，审查依据通用安全常识。"
                       "若确信该改动涉及内部规范，请检查规范库索引与检索门限标定"
                       "（`python -m scripts.check_retrieval`）。", ""]
+    if result.deadline_exceeded:
+        lines += ["> ⏳ 本次审查在到达时间预算前未完成：以下结论只覆盖已审部分，"
+                  "请拆分该 PR 或调大 `REVIEW_DEADLINE_SECONDS` 后重试。", ""]
     if not result.rag_available:
         lines += ["> ⚠️ 规范检索不可用，本次为无 RAG 降级审查", ""]
     if result.degraded_files:

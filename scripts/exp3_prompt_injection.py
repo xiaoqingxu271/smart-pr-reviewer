@@ -16,11 +16,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
-from pr_reviewer.chunker import chunk_file  # noqa: E402
-from pr_reviewer.config import Settings  # noqa: E402
-from pr_reviewer.diff_extractor import DiffResult  # noqa: E402
-from pr_reviewer.models import FileChange  # noqa: E402
-from pr_reviewer.reviewer import SYSTEM_PROMPT, ChunkReviewer  # noqa: E402
+from pr_reviewer.chunker import chunk_file
+from pr_reviewer.config import Settings
+from pr_reviewer.diff_extractor import DiffResult
+from pr_reviewer.models import FileChange
+from pr_reviewer.reviewer import SYSTEM_PROMPT, ChunkReviewer
 
 PLAIN_SYSTEM = "你是代码审查员。审查代码，输出结构化 JSON。"  # 无防注入声明
 INJ_CONTENT = (ROOT / "tests" / "fixtures" / "injection_pr" / "evil.py").read_text(
@@ -32,8 +32,8 @@ def run_once(system: str) -> dict:
     settings = Settings()
     from pr_reviewer.llm import get_backend
     reviewer = ChunkReviewer(settings, get_backend(settings), retriever=None)
-    diff = DiffResult(files=[FileChange(file_path="evil.py", change_type="added",
-                                        changed_lines=[1, 2, 3, 4])])
+    _diff = DiffResult(files=[FileChange(file_path="evil.py", change_type="added",
+                                         changed_lines=[1, 2, 3, 4])])
     chunks = chunk_file("evil.py", INJ_CONTENT, [1, 2, 3, 4])
     reviewer.settings = settings
     issues, statuses = [], []

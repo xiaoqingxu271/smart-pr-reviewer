@@ -254,6 +254,15 @@ class PRReviewResult(BaseModel):
 - **鉴权**：`/review*` 一律校验 `Authorization: Bearer $API_TOKEN`；未配置 `API_TOKEN`
   时接口返回 503 **停用**（fail-closed），而不是无鉴权运行；`/health` 免鉴权供探活；
 - **local 模式白名单**：只允许读取 `ALLOWED_REPO_ROOTS` 列出的目录下的仓库，未配置即禁用；
+- **过载护栏**：`MAX_CONCURRENT_REVIEWS` 限制同时在审的 PR 数（默认 2），
+  `MAX_PENDING_REVIEWS` 限制待处理总数，超出直接 429 拒绝而不是排队淹死——
+  `BackgroundTasks` 无上限时，一个几百文件的 PR 能长期占住线程池拖垮所有请求；
+  单份审查受 `REVIEW_DEADLINE_SECONDS`（默认 600）墙钟预算约束，超时返回**已审部分**
+  并在报告与结果里标记 `deadline_exceeded`（静默的不完整比不完整更危险）；
+- **API 模式取文件内容**：默认一次 shallow fetch 到临时仓库、再从 git 对象库读 blob
+  （`USE_CLONE_FETCH`），失败自动退回逐文件 contents 接口。逐文件接口在 30 文件的 PR 上
+  要发 30 次请求，未认证时 GitHub 限额 60 次/小时，一个 PR 就能吃光额度；
+  读 blob 而非 checkout 后的工作区文本，避免 `core.autocrlf` 改写行尾与 diff 口径不一致；
 - 服务端日志记录每次审查的：耗时、token 用量、各阶段块数、幻觉过滤数、**检索命中率与
   top1 均分**（`log.py`，单行 key=value）；
 - 返回给调用方的失败信息是友好文案，异常细节（含可能存在的凭据）只进服务端日志。
@@ -267,8 +276,12 @@ class PRReviewResult(BaseModel):
 
 | 故障 | 策略 |
 |---|---|
-| LLM 超时/限流 | 指数退避重试 3 次，仍失败则该批标记 `review_error` |
+| LLM 超时/限流 | 指数退避重试 3 次，仍失败则该批标记 `review_error`；**不得冒泡中断整份 PR** |
+| 浅取克隆失败 | 自动退回逐文件 contents 接口，并在日志与 `RuntimeWarning` 中说明 |
+| 非 UTF-8 源码 | 依次按 UTF-8 → GB18030 → `replace` 解码，**禁止静默跳过文件**（漏审比报错危险） |
+| 过载（待处理数超上限） | 返回 429 + 可重试提示，不留下永远不动的任务记录 |
 | ChromaDB 不可用 | 降级为「无 RAG 审查」，报告 header 声明「规范检索不可用」 |
+| 索引存在但为空 | `/health` 的 `rag.available=false`、`index_size=0`——检索空转必须在探活里看得见 |
 | 单文件解析崩溃 | 捕获异常，该文件标记 `degraded`，不中断整体 |
 | Ollama 未启动 | `/health` 明确报错，提示启动命令 |
 

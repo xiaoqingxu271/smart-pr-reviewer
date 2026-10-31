@@ -12,12 +12,11 @@ import httpx
 from pydantic import BaseModel, ValidationError
 
 from pr_reviewer.config import Settings
-from pr_reviewer.llm.base import (LLMBackend, LLMOutputError, LLMUnavailableError,
-                                  retry_after_sleep)
+from pr_reviewer.llm.base import LLMBackend, LLMOutputError, LLMUnavailableError, retry_after_sleep
 
 
 class OllamaBackend(LLMBackend):
-    RETRYABLE_STATUS = {408, 425, 429, 500, 502, 503, 504}
+    RETRYABLE_STATUS = frozenset({408, 425, 429, 500, 502, 503, 504})
 
     def __init__(self, settings: Settings):
         self.settings = settings

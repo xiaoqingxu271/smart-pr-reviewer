@@ -6,6 +6,7 @@ diff → 分块（只送变更块，附相邻块 context）→ 巨块二级切�
 from __future__ import annotations
 
 import time
+
 from pydantic import BaseModel
 
 from pr_reviewer.chunker import chunk_file, split_oversized_chunk
@@ -15,7 +16,7 @@ from pr_reviewer.llm.base import LLMOutputError, LLMUnavailableError
 from pr_reviewer.log import get_logger
 from pr_reviewer.masking import mask_secrets
 from pr_reviewer.models import CodeChunk, PRReviewResult
-from pr_reviewer.reviewer import ChunkReviewer, SYSTEM_PROMPT
+from pr_reviewer.reviewer import ChunkReviewer
 
 SUMMARY_SYSTEM = """你是代码审查报告撰写人。根据 issues 清单撰写 PR 摘要：
 提及每个存在 issue 的文件，按风险等级归纳，不超过 200 字，中文输出。"""
@@ -60,7 +61,9 @@ def _select_chunks(settings: Settings, diff: DiffResult,
 def _batches(chunks: list[CodeChunk], settings: Settings) -> list[list[CodeChunk]]:
     """token 预算分批（PRD §4.5）：近似 1 token ≈ 3 字符。"""
     budget = settings.token_budget * 3
-    batches, cur, size = [], [], 0
+    batches: list[list[CodeChunk]] = []
+    cur: list[CodeChunk] = []
+    size = 0
     for c in chunks:
         n = len(c.content) + len(c.context)
         if cur and size + n > budget:
@@ -84,13 +87,27 @@ def run_review(settings: Settings, diff: DiffResult, file_contents: dict[str, st
              len(diff.files), len(chunks), len(skipped), len(degraded), len(batches))
 
     issues, hallucinated, errors = [], 0, 0
+    deadline = settings.review_deadline_seconds
+    deadline_hit = False
+    reviewed = 0
     for batch in batches:
         for chunk in batch:
+            # 墙钟预算护栏：超大 PR 不能无限占住一个 worker。超时后返回**已审出的部分**
+            # 并显式标记，而不是让调用方以为整份 PR 审完了——静默不完整比不完整更糟。
+            if deadline and time.time() - start > deadline:
+                deadline_hit = True
+                break
             batch_issues, status, filtered = reviewer.review_chunk(chunk)
+            reviewed += 1
             hallucinated += filtered
             if status == "error":
                 errors += 1
             issues.extend(batch_issues)
+        if deadline_hit:
+            break
+    if deadline_hit:
+        log.warning("stage=deadline_hit budget=%ss reviewed=%d/%d 剩余块未审",
+                    deadline, reviewed, len(chunks))
 
     from pr_reviewer.reviewer import merge_issues
     # 脱敏在结果层就做（PRD §6.4）：JSON 响应和 Markdown 都是对外输出
@@ -143,6 +160,7 @@ def run_review(settings: Settings, diff: DiffResult, file_contents: dict[str, st
         hallucination_filtered=hallucinated,
         review_errors=errors,
         rag_available=retriever is not None,
+        deadline_exceeded=deadline_hit,
         retrieval=retrieval,
         rule_excerpts=excerpts,
     )

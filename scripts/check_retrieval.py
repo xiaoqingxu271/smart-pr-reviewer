@@ -17,10 +17,10 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from pr_reviewer.config import get_settings  # noqa: E402
-from pr_reviewer.rag import INDEX_META_FILE, StandardsRetriever  # noqa: E402
-from run_eval import FIXTURES, GT_PATH, load_pr_dir  # noqa: E402
-from pr_reviewer.pipeline import _select_chunks  # noqa: E402
+from pr_reviewer.config import get_settings
+from pr_reviewer.pipeline import _select_chunks
+from pr_reviewer.rag import INDEX_META_FILE, StandardsRetriever
+from run_eval import FIXTURES, GT_PATH, load_pr_dir
 
 TYPE_TO_RULE = {
     "hardcoded_secret": "SEC-001", "sql_injection": "SEC-002",

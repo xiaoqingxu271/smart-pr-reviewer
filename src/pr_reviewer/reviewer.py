@@ -101,7 +101,6 @@ class ChunkReviewer:
         rules = self.retriever.retrieve(chunk.content) if self.retriever else []
         if self.retriever is not None:
             self.counter.record(rules)          # 检索仪表（PRD §6.1）
-        prompt = self._user_prompt(chunk, rules)
         feedback: str | None = None
         for _ in range(self.settings.review_max_retries + 1):
             try:

@@ -9,8 +9,14 @@ import math
 from pathlib import Path
 
 from pr_reviewer.config import Settings
-from pr_reviewer.rag import (INDEX_META_FILE, HashEmbedder, InMemoryStore,
-                             StandardsRetriever, _with_prefix, parse_standards_md)
+from pr_reviewer.rag import (
+    INDEX_META_FILE,
+    HashEmbedder,
+    InMemoryStore,
+    StandardsRetriever,
+    _with_prefix,
+    parse_standards_md,
+)
 
 SAMPLE_MD = """\
 # 研发代码安全规范（样例）

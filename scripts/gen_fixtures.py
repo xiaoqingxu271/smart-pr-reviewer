@@ -87,8 +87,8 @@ def main() -> None:
                         f"{item['pr']} {path}:{line} 标注越界"
         ground_truth.append({
             "pr": item["pr"],
-            "vulnerabilities": [{"file_path": p, "line": l, "type": t}
-                                for p, l, t in item["gt"]],
+            "vulnerabilities": [{"file_path": p, "line": line, "type": t}
+                                for p, line, t in item["gt"]],
         })
 
     for pr, files in CLEAN:

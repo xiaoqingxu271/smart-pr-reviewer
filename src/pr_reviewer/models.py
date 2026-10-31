@@ -110,6 +110,7 @@ class PRReviewResult(BaseModel):
     hallucination_filtered: int = 0     # 幻觉后校验丢弃的 issue 数（PRD §5.4）
     review_errors: int = 0              # 重试耗尽仍失败的块数（PRD §5.4 第 2 条）
     rag_available: bool = True          # ChromaDB 不可用时降级声明（PRD §6.3）
+    deadline_exceeded: bool = False     # 超出墙钟预算，只审了部分块（PRD §6.1 护栏）
     retrieval: RetrievalStats | None = None   # RAG 关闭时为 None
     rule_excerpts: dict[str, str] = Field(default_factory=dict)  # 条款号 → 原文摘录（PRD §5.3）
 

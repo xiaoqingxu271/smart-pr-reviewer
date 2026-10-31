@@ -11,7 +11,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
-from pr_reviewer.chunker import _chunk_lines, chunk_file  # noqa: E402
+from pr_reviewer.chunker import _chunk_lines, chunk_file
 
 
 def make_giant_file(n_funcs: int = 100, lines_per_func: int = 50) -> tuple[str, list[tuple[str, int, int]]]:

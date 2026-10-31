@@ -71,7 +71,7 @@ class KeywordFakeLLM:
     fake 模式的结果代表评测框架自洽，不代表模型真实水平。
     """
 
-    RULES = [
+    RULES = (
         ("hardcoded_secret", re.compile(r"['\"](?:sk-|sup3r|passw|token|secret)[^'\"]{4,}['\"]", re.I)),
         ("sql_injection", re.compile(r"SELECT .*\{|f\"SELECT|% .*SELECT|\+ .*SELECT", re.I)),
         ("command_injection", re.compile(r"shell\s*=\s*True")),
@@ -81,7 +81,7 @@ class KeywordFakeLLM:
         ("tls_verification_disabled", re.compile(r"verify\s*=\s*False")),
         ("code_injection", re.compile(r"eval\(")),
         ("xss", re.compile(r"innerHTML\s*=")),
-    ]
+    )
 
     def __init__(self):
         self.token_usage = 0

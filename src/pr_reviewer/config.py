@@ -50,12 +50,19 @@ class Settings(BaseSettings):
     # 服务
     host: str = "0.0.0.0"
     port: int = 8000
+    # 过载与超时护栏（PRD §6.1）：并发审查数、待处理上限、单份审查的墙钟预算
+    max_concurrent_reviews: int = 2
+    max_pending_reviews: int = 20
+    review_deadline_seconds: int = 600      # 0 = 不限；超限返回部分结论并显式标记
     # 接口鉴权（PRD §6.4）：留空 = 审查接口一律 503 停用（fail-closed），
     # 而不是"没配就当公开服务跑"——报告里含源码片段，裸奔等于源码外泄通道
     api_token: str = ""
     # local 模式允许读取的仓库根目录（逗号分隔）；留空 = 禁用 local 模式。
     # 不限制的话任何调用方都能让服务器读取磁盘上任意 git 仓库
     allowed_repo_roots: str = ""
+    # API 模式取文件内容：先做一次 shallow fetch（默认），失败退回逐文件接口。
+    # 关掉它就只用逐文件接口——30 文件的 PR 会发 30 次请求，容易撞限额。
+    use_clone_fetch: bool = True
 
     # 路径
     standards_md_path: Path = Path("docs/研发代码安全规范.md")

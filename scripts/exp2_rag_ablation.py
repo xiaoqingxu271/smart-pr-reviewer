@@ -7,15 +7,14 @@
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
-from pr_reviewer.config import Settings  # noqa: E402
-from run_eval import evaluate  # noqa: E402
+from pr_reviewer.config import Settings
+from run_eval import evaluate
 
 
 def main() -> None:

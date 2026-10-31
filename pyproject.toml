@@ -20,7 +20,40 @@ local = ["ollama>=0.3"]  # Ollama 本地后端按需安装
 embed = ["sentence-transformers>=3.3"]  # EMBEDDING_BACKEND=local（源码不出机器）
 
 [dependency-groups]
-dev = ["pytest>=8.3", "pytest-asyncio>=0.24"]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.8",
+    "mypy>=1.13",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests", "scripts"]
+extend-exclude = [".venv", ".chroma", "reports", "tests/fixtures"]
+
+[tool.ruff.lint]
+# E/W 风格、F 正确性（未定义名、未用导入）、I 导入排序、B/BLE 常见陷阱与裸 except、
+# UP 现代化语法、SIM 可简化写法、RUF ruff 自有规则
+select = ["E", "W", "F", "I", "B", "BLE", "UP", "SIM", "RUF"]
+ignore = [
+    "E501",     # 行宽交给格式化，注释里中文宽度本来就难对齐
+    "RUF001",   # 中文全角标点在字符串里是正常的，不是笔误
+    "RUF002",
+    "RUF003",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"scripts/*" = ["E402"]        # 探针/评测脚本必须先补 sys.path 再导入项目模块
+
+[tool.mypy]
+python_version = "3.11"
+files = ["src"]
+ignore_missing_imports = true       # chromadb / git / sentence-transformers 等无 stub
+check_untyped_defs = true
+warn_unused_ignores = true
+no_implicit_optional = true
 
 [build-system]
 requires = ["hatchling"]

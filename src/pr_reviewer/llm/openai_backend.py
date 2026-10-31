@@ -8,11 +8,15 @@
 from __future__ import annotations
 
 import json
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, ValidationError
 
 from pr_reviewer.config import Settings
 from pr_reviewer.llm.base import LLMBackend, LLMOutputError, LLMUnavailableError
+
+if TYPE_CHECKING:      # 只为类型标注引入，运行时仍走延迟导入（缺 openai 也能 import 本模块）
+    from openai import OpenAI
 
 _SCHEMA_UNSUPPORTED_KEYWORDS = ("response_format", "json_schema", "schema",
                                 "not support", "unsupported")
@@ -22,7 +26,7 @@ class OpenAIBackend(LLMBackend):
     def __init__(self, settings: Settings):
         self.settings = settings
         self.token_usage = 0
-        self._client = None
+        self._client: OpenAI | None = None
 
     def _base_url(self) -> str | None:
         url = self.settings.openai_base_url.rstrip("/")
@@ -80,12 +84,12 @@ class OpenAIBackend(LLMBackend):
                         },
                     },
                 )
-            except Exception as exc:  # noqa: BLE001 — 网关不支持 json_schema 时降级
+            except Exception as exc:
                 if not any(k in str(exc).lower() for k in _SCHEMA_UNSUPPORTED_KEYWORDS):
                     raise
                 resp = client.chat.completions.create(model=self.settings.model_name,
                                                       messages=messages)
-        except Exception as exc:  # noqa: BLE001 — 归一化为后端不可用，由 reviewer 计错
+        except Exception as exc:
             raise self._to_unavailable(exc) from exc
         if resp.usage:
             self.token_usage += resp.usage.total_tokens

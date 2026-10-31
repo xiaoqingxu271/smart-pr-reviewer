@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      # 不装 --extra embed：CI 只需跑离线测试（embedding_backend=hash + FakeLLM），
+      # 拉 CPU 版 torch 会让每次 push 多等几分钟，收益为零
+      - name: 安装依赖
+        run: uv sync --dev
+
+      - name: Lint（ruff）
+        run: uv run ruff check .
+
+      - name: 类型（mypy，配置见 pyproject [tool.mypy]）
+        run: uv run mypy
+
+      - name: 测试（pytest，全离线）
+        run: uv run pytest -q
+
+      - name: 规范索引可构建（不联网，用 hash 后端）
+        run: uv run python -m scripts.build_standards_index
+        env:
+          EMBEDDING_BACKEND: hash
+          RETRIEVAL_SCORE_THRESHOLD: "0.05"
+          RETRIEVAL_MARGIN: "0.20"
