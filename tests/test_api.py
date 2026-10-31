@@ -216,12 +216,7 @@ def test_overload_rejects_cleanly_instead_of_drowning(env):
     assert client.get("/health").json()["load"]["rejected_total"] == 1
 
     gate.set()
-    task_id = first.json()["review_id"]
-    for _ in range(80):
-        detail = client.get(f"/review/{task_id}", headers=AUTH).json()
-        if detail["status"] == "completed":
-            break
-        time.sleep(0.05)
+    detail = wait_for_state(client, first.json()["review_id"])
     assert detail["status"] == "completed"
     assert detail["result"]["summary"] == "a.py 存在硬编码密钥。"
 
@@ -229,10 +224,14 @@ def test_overload_rejects_cleanly_instead_of_drowning(env):
 class RecordingPublisher:
     """替身发布器：验证 webhook 走完"审查 → 写回 PR"闭环，不联网。"""
 
+    delay = 0.0
+
     def __init__(self):
         self.calls = []
 
     def publish(self, repo_url, pr_number, commit_sha, result):
+        if self.delay:
+            time.sleep(self.delay)      # 真实写回要跑 GitHub API，不会比这更快
         self.calls.append({"repo": repo_url, "pr": pr_number, "sha": commit_sha,
                            "issues": len(result.issues)})
         return {"inline": len(result.issues), "deferred": [], "summary_posted": True}
@@ -277,6 +276,54 @@ def test_webhook_verifies_signature_then_queues_and_publishes(env):
     assert detail["status"] == "completed"
     assert stub.calls == [{"repo": "https://github.com/acme/api", "pr": 7,
                            "sha": "feat", "issues": 1}]
+    # 写回结果要能查：调用方得知道"报告出来了"之外，评论到底发没发出去
+    assert detail["publish"] == {"status": "posted", "inline": 1, "deferred": 0,
+                                 "summary_posted": True}
+
+
+class SlowPublisher(RecordingPublisher):
+    delay = 0.4
+
+
+def test_completed_means_comments_are_already_posted(env):
+    """completed 之后不该再有"稍后才发生"的副作用。
+
+    顺序写反（先 completed 再写回）时，轮询到 completed 的调用方去 PR 上看不到评论——
+    这是会撒谎的状态契约。CI 上就因为这条随机红过一次：写回只有几微秒，本地永远抢在
+    轮询前面，慢一点的 runner 就复现。把写回拖慢到肉眼可见，测试才能钉住这个不变量。
+    """
+    make_app, _ = env
+    stub = SlowPublisher()
+    client = make_app(publisher=stub, webhook_secret=WEBHOOK_SECRET)
+    body = webhook_body()
+    headers = {"x-github-event": "pull_request", "x-hub-signature-256": signed(body)}
+
+    ok = client.post("/webhook/github", content=body, headers=headers)
+    detail = wait_for_state(client, ok.json()["review_id"])
+    assert detail["status"] == "completed"
+    assert len(stub.calls) == 1, "completed 时评论还没写回，状态在骗轮询方"
+    assert detail["publish"]["status"] == "posted"
+
+
+class BoomPublisher(RecordingPublisher):
+    def publish(self, repo_url, pr_number, commit_sha, result):
+        raise RuntimeError("github api 503")
+
+
+def test_publish_failure_keeps_report_and_says_so(env):
+    """写回挂了不该把审查判失败：报告照旧可取，失败原因进 publish 字段。"""
+    make_app, _ = env
+    client = make_app(publisher=BoomPublisher(), webhook_secret=WEBHOOK_SECRET)
+    body = webhook_body()
+    headers = {"x-github-event": "pull_request", "x-hub-signature-256": signed(body)}
+
+    ok = client.post("/webhook/github", content=body, headers=headers)
+    detail = wait_for_state(client, ok.json()["review_id"])
+    assert detail["status"] == "completed"
+    assert detail["publish"]["status"] == "failed"
+    assert "github api 503" in detail["publish"]["reason"]
+    assert client.get(f"/review/{ok.json()['review_id']}/report",
+                      headers=AUTH).status_code == 200
 
 
 def test_webhook_disabled_without_secret_and_without_publisher(env):

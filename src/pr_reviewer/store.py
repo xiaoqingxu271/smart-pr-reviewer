@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     result     TEXT,
     report     TEXT,
     error      TEXT,
+    publish    TEXT,
     cached     INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS result_cache (
@@ -53,6 +54,11 @@ def init_db(db_path: Path) -> None:
     conn = connect(db_path)
     try:
         conn.executescript(_SCHEMA)
+        # 老库升级：CREATE TABLE IF NOT EXISTS 不会给已存在的表补新列，
+        # 缺列时 INSERT 直接报错，服务起不来。ADD COLUMN 是元数据操作，旧行自动为 NULL。
+        columns = {r[1] for r in conn.execute("PRAGMA table_info(tasks)")}
+        if "publish" not in columns:
+            conn.execute("ALTER TABLE tasks ADD COLUMN publish TEXT")
         conn.commit()
     finally:
         conn.close()
@@ -79,6 +85,7 @@ class TaskStore:
 
     def update(self, task_id: str, *, status: str | None = None, result: dict | None = None,
                report: str | None = None, error: str | None = None, cached: bool = False,
+               publish: dict | None = None,
                ) -> None:
         sets: list[str] = ["updated_at = ?"]
         values: list[object] = [time.time()]
@@ -89,6 +96,9 @@ class TaskStore:
         if result is not None:
             sets.append("result = ?")
             values.append(json.dumps(result, ensure_ascii=False))
+        if publish is not None:
+            sets.append("publish = ?")
+            values.append(json.dumps(publish, ensure_ascii=False))
         if cached:
             sets.append("cached = 1")
         values.append(task_id)
@@ -99,7 +109,7 @@ class TaskStore:
 
     def get(self, task_id: str) -> dict | None:
         row = self._conn.execute(
-            "SELECT id, status, result, report, error, cached, created_at, updated_at"
+            "SELECT id, status, result, report, error, cached, created_at, updated_at, publish"
             " FROM tasks WHERE id = ?", (task_id,)).fetchone()
         if not row:
             return None
@@ -108,6 +118,7 @@ class TaskStore:
             "result": json.loads(row[2]) if row[2] else None,
             "report": row[3], "error": row[4], "cached": bool(row[5]),
             "created_at": row[6], "updated_at": row[7],
+            "publish": json.loads(row[8]) if row[8] else None,
         }
 
     def delete(self, task_id: str) -> None:

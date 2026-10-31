@@ -8,7 +8,7 @@
 ## 快速开始
 
 ```bash
-# 1. 安装（建议 Python 3.11+）
+# 1. 安装（Python 3.11+；仓库钉 3.12，uv 按 .python-version 自动装）
 uv sync --dev --extra embed   # embed = 本地 embedding（sentence-transformers + CPU torch）
                               # 内网/离线部署设 HF_HUB_OFFLINE=1，模型走 ~/.cache/huggingface
 

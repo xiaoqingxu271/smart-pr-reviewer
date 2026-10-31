@@ -11,8 +11,8 @@
 
 | 依赖 | 要求 | 说明 |
 |---|---|---|
-| Python | 3.11+ | `pyproject.toml` 里 `requires-python` |
-| uv | 任意近期版本 | 也可 `pip install -e ".[dev]"` |
+| Python | 3.11+（仓库钉 3.12） | `requires-python` 是下限；`.python-version` 让 CI 与本地跑同一个解释器 |
+| uv | 任意近期版本 | 也可 `pip install -e ".[dev]"`；CI 用 `uv sync --frozen`，依赖锁 `uv.lock` |
 | git | 2.30+ | API 模式取文件内容要用 `git fetch`（浅取克隆） |
 | LLM 后端 | OpenAI 兼容网关 或 Ollama | 见 §3 |
 | GitHub | 一个 PAT + 仓库 webhook 权限 | 只用 HTTP API 手动提交审查时可跳过 |
@@ -254,6 +254,8 @@ stage=task_done … stage=published task=… inline=1 deferred=0 summary=True
 | 任务一直 `running` | 大 PR 排队中（并发上限默认 2） | 看 `/health` 的 `load.pending`，调 `MAX_CONCURRENT_REVIEWS` |
 | 任务 `failed` 且 error 是友好文案 | 细节在服务端日志的 `stage=task_failed` | 按 `review_id` 去日志里找 `error_type` |
 | 没有行内评论只有摘要评论 | 行号不在 diff 覆盖范围（合并后漂移，GitHub 返回 422），条目已退化进摘要 | 正常降级；若整份都这样，检查 `commit_id` 是否取的是 PR head |
+| 任务 completed 但 PR 上没评论 | 看 `GET /review/{id}` 的 `publish` 字段：`failed` 是 GitHub 侧报错（附异常摘要），`skipped` 是没配 token 或缓存命中没重复发 | 按 `publish.reason` 处置；写回本身在 `completed` 之前完成，所以不会出现"评论还在路上"的中间态 |
+| 报告出了但状态还停在 `running` | 写回评论要等 GitHub API（单请求最多 30s，问题多时逐条发） | 属设计取舍：宁可让状态可见得慢，也不让"已完成"撒谎。要立刻拿报告就设 `post_comments=false` 走 `/review` |
 | 同一 PR 被反复评审 | `synchronize` 每次 push 都会触发 | 属预期；要抑制就在 CI 侧控制推送频率或加去重（当前未实现） |
 | 评测数字看着离谱 | 有失败块（限流） | 报表顶部有 ⚠️ 就别用；加大 `--delay` 与 `LLM_MAX_RETRIES` 重跑 |
 | 服务启动卡在联网 | embedding 在探测 HF Hub | `export HF_HUB_OFFLINE=1`（模型须已在缓存里） |

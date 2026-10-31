@@ -15,11 +15,16 @@ jobs:
         uses: astral-sh/setup-uv@v4
         with:
           enable-cache: true
+          # 与仓库里的 .python-version 一致。不钉的后果：uv 自己去挑一个"满足
+          # requires-python>=3.11"的解释器，CI 与本地的版本就可能不同——
+          # 出问题时报错只有一句 exit code 1，谁都猜不到是环境差异。
+          python-version: "3.12"
 
       # 不装 --extra embed：CI 只需跑离线测试（embedding_backend=hash + FakeLLM），
       # 拉 CPU 版 torch 会让每次 push 多等几分钟，收益为零
+      # --frozen：只按 uv.lock 装，绝不在 CI 里悄悄重新解析版本
       - name: 安装依赖
-        run: uv sync --dev
+        run: uv sync --frozen --dev
 
       - name: Lint（ruff）
         run: uv run ruff check .
@@ -27,8 +32,37 @@ jobs:
       - name: 类型（mypy，配置见 pyproject [tool.mypy]）
         run: uv run mypy
 
+      # junitxml 是为了下一步能把红掉的测试名贴出来：只有 "Exit code 1" 的 CI
+      # 等于没有 CI——本地全绿时根本无法定位，只能靠猜
       - name: 测试（pytest，全离线）
-        run: uv run pytest -q
+        run: uv run pytest -q --tb=short --junitxml=pytest.xml
+
+      - name: 失败定位（把红掉的测试名写进 Summary 与 annotation）
+        if: failure()
+        run: |
+          uv run python - <<'PY'
+          import pathlib
+          import xml.etree.ElementTree as ET
+
+          report = pathlib.Path("pytest.xml")
+          if not report.exists():
+              print("::error::pytest 没跑完（多半是导入/收集阶段就崩了），看上方原始输出")
+              raise SystemExit(0)
+          cases = list(ET.parse(report).getroot().iter("testcase"))
+          bad = []
+          for tc in cases:
+              node = tc.find("failure")
+              if node is None:
+                  node = tc.find("error")
+              if node is not None:
+                  bad.append((tc, node))
+          for tc, node in bad:
+              msg = " ".join((node.get("message") or "").split())[:220]
+              line = f"{tc.get('classname')}::{tc.get('name')} -> {msg}"
+              print(f"::error::{line}")
+              print(f"- {line}")
+          print(f"共 {len(cases)} 例，失败 {len(bad)} 例")
+          PY
 
       - name: 规范索引可构建（不联网，用 hash 后端）
         run: uv run python -m scripts.build_standards_index

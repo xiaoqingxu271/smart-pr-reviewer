@@ -277,7 +277,13 @@ class PRReviewResult(BaseModel):
 - 写回内容：每个 issue 一条行内评论（含风险等级、建议、命中的规范条款号与原文摘录），
   外加一条摘要评论（整体结论 + 降级声明）。GitHub 对不在 diff 覆盖范围内的行返回 422，
   此时该条目**退进摘要评论**而不是丢弃；
-- 发布失败绝不影响审查结果落库与任务状态（独立 try/except + `stage=publish_failed` 日志）；
+- 发布失败绝不影响审查结果落库与任务状态（独立 try/except + `stage=publish_failed` 日志），
+  但**写回一定发生在任务变成 `completed` 之前**：状态是对外契约，轮询到 `completed` 就应该
+  能在 PR 上看到评论。先写 completed 再发评论，等于给轮询方一个会撒谎的状态（CI 上就这样
+  随机红过一次：写回只有几微秒，本地抢在轮询前面，慢一点的 runner 就复现）；
+- 写回结论记在任务态的 `publish` 字段并随 `GET /review/{id}` 返回：`posted`（含
+  `inline` / `deferred` / `summary_posted` 计数）、`failed`（带异常摘要）、`skipped`
+  （没配 token，或缓存命中没重复发）；
 - 同一 head sha 命中缓存时不重复发评论（缓存 key 含 sha，避免同一提交刷出两套评论）。
 
 - 请求体（Pydantic 校验）：`{"mode": "local" | "api", "repo_path"?, "base_branch"?, "head_branch"?, "repo_url"?, "pr_number"?}`；

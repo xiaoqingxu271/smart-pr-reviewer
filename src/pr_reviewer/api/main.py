@@ -74,6 +74,38 @@ def create_app(settings: Settings | None = None, llm=None, retriever=None,
         if authorization != f"Bearer {settings.api_token}":
             raise HTTPException(401, "Authorization 缺失或不正确")
 
+    def _publish(request: ReviewRequest, task_id: str, head_ref: object,
+                 result: PRReviewResult) -> dict | None:
+        """写回 PR，返回可落库的写回结果（没要求写回就是 None）。
+
+        必须在任务变成 completed **之前**跑完：状态一对外可见，调用方就去 PR 上找评论，
+        "completed 但评论还在路上"是个会撒谎的契约（CI 就是这样随机红过一次——
+        本地 5 次全绿，runner 上慢一点点就复现）。
+        写回失败不把任务判失败：报告已经生成，评论没发出去是另一件事，
+        用 publish 字段如实告诉调用方"审查完成，但写回没成功"。
+        """
+        log = get_logger()
+        if not request.post_comments:
+            return None
+        pub = _publisher()
+        if pub is None:
+            log.warning("stage=publish_skipped task=%s reason=no_github_token", task_id)
+            return {"status": "skipped", "reason": "未配置 GITHUB_TOKEN"}
+        try:
+            stats = pub.publish(request.repo_url, request.pr_number,
+                                str(head_ref), result)
+            log.info("stage=published task=%s inline=%d deferred=%d summary=%s",
+                     task_id, stats["inline"], len(stats["deferred"]),
+                     stats["summary_posted"])
+            return {"status": "posted", "inline": stats["inline"],
+                    "deferred": len(stats["deferred"]),
+                    "summary_posted": stats["summary_posted"]}
+        except Exception as exc:  # noqa: BLE001
+            log.warning("stage=publish_failed task=%s error_type=%s detail=%s",
+                        task_id, type(exc).__name__, str(exc)[:200])
+            return {"status": "failed",
+                    "reason": f"{type(exc).__name__}: {str(exc)[:120]}"}
+
     def _run_task(task_id: str, request: ReviewRequest) -> None:
         log = get_logger()
         store.update(task_id, status="running")
@@ -84,7 +116,10 @@ def create_app(settings: Settings | None = None, llm=None, retriever=None,
             hit = cache.get(key)
             if hit is not None:
                 store.update(task_id, status="completed", result=hit["result"],
-                             report=hit["report"], cached=True)
+                             report=hit["report"], cached=True,
+                             publish={"status": "skipped",
+                                     "reason": "缓存命中：同一 head 已写回过了"}
+                             if request.post_comments else None)
                 log.info("stage=task_cached task=%s", task_id)
                 return
 
@@ -95,27 +130,14 @@ def create_app(settings: Settings | None = None, llm=None, retriever=None,
             payload = result.model_dump(mode="json")
             settings.reports_dir.mkdir(parents=True, exist_ok=True)
             (settings.reports_dir / f"{task_id}.md").write_text(report, encoding="utf-8")
-            store.update(task_id, status="completed", result=payload, report=report)
+            # 先写缓存再写回：并发进来的同一份 diff 会走缓存分支，不会把评论发两遍
             cache.put(key, payload, report)
+            publish = _publish(request, task_id, head_ref, result)
+            # 终态只有一次写入：completed 之后再没有"稍后才发生"的副作用
+            store.update(task_id, status="completed", result=payload, report=report,
+                         publish=publish)
             log.info("stage=task_done task=%s issues=%d duration=%.2fs",
                      task_id, len(result.issues), result.duration_seconds)
-            if request.post_comments:
-                # 缓存命中路径不发评论：key 含 head sha，同一 sha 说明评论已经发过了。
-                # 发布失败只记日志——审查结果已落库，不该因为写评论失败就把任务判失败
-                pub = _publisher()
-                if pub is None:
-                    log.warning("stage=publish_skipped task=%s reason=no_github_token",
-                                task_id)
-                else:
-                    try:
-                        stats = pub.publish(request.repo_url, request.pr_number,
-                                            str(head_ref), result)
-                        log.info("stage=published task=%s inline=%d deferred=%d summary=%s",
-                                 task_id, stats["inline"], len(stats["deferred"]),
-                                 stats["summary_posted"])
-                    except Exception as exc:  # noqa: BLE001
-                        log.warning("stage=publish_failed task=%s error_type=%s detail=%s",
-                                    task_id, type(exc).__name__, str(exc)[:200])
         except RepoNotAllowed as exc:
             store.update(task_id, status="failed", error=str(exc))
             log.warning("stage=task_rejected task=%s reason=%s", task_id, exc)
@@ -171,7 +193,8 @@ def create_app(settings: Settings | None = None, llm=None, retriever=None,
         task = store.get(task_id)
         if not task:
             raise HTTPException(404, "review not found")
-        return {k: task[k] for k in ("review_id", "status", "result", "error", "cached")}
+        return {k: task[k] for k in ("review_id", "status", "result", "error", "cached",
+                                     "publish")}
 
     @app.get("/review/{task_id}/report", dependencies=[Depends(require_token)])
     def get_report(task_id: str):
