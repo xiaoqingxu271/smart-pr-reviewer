@@ -191,6 +191,8 @@ def evaluate(embedder, samples: list[dict], rules: list[dict],
         "n": n,
         "recall@1": sum(1 for r in ranks if r <= 1) / n,
         "recall@3": sum(1 for r in ranks if r <= 3) / n,
+        # 生产用 top_k=5：选型必须按实际截断位比，只看 R@1/R@3 会选出错的方案
+        f"recall@{PROD_TOP_K}": sum(1 for r in ranks if r <= PROD_TOP_K) / n,
         "mrr": statistics.fmean(1 / r if r < 99 else 0 for r in ranks),
         "top1_score_mean": statistics.fmean(top1_scores),
         "correct_scores": sorted(correct_scores),
@@ -360,7 +362,10 @@ def main() -> None:
         res["neg_top1"] = negative_top1(emb, neg_texts, rules)
         clean_pass = sum(1 for sc in res["neg_top1"] if sc >= 0.30) / len(neg_texts)
         results[label] = res
+    K = f"recall@{PROD_TOP_K}"
+    for label, res in results.items():
         print(f"{label:52s} R@1={res['recall@1']:.2f} R@3={res['recall@3']:.2f} "
+              f"{K}={res[K]:.2f} "
               f"MRR={res['mrr']:.2f} top1分={res['top1_score_mean']:.3f} "
               f"干净块过阈@0.30={clean_pass:.0%}")
 
@@ -373,20 +378,29 @@ def main() -> None:
           "", "## 档位对比", "",
           "「干净块过阈率」= 无关代码的最高相似度超过当前生产阈值 0.30 的比例，"
           "代表该方案会把多少无关条款塞进审查 prompt。", "",
-          "| 方案 | recall@1 | recall@3 | MRR | 平均 top1 相似度 | 干净块过阈率@0.30 |",
-          "|---|---|---|---|---|---|"]
+          f"| 方案 | recall@1 | recall@3 | recall@{PROD_TOP_K}（=生产 top_k） | MRR |"
+          " 平均 top1 相似度 | 干净块过阈率@0.30 |",
+          "|---|---|---|---|---|---|---|"]
     for label, res in results.items():
         clean_pass = sum(1 for sc in res["neg_top1"] if sc >= 0.30) / len(neg_texts)
         md.append(f"| {label} | {res['recall@1']:.2f} | {res['recall@3']:.2f} "
-                  f"| {res['mrr']:.2f} | {res['top1_score_mean']:.3f} | {clean_pass:.0%} |")
+                  f"| {res[K]:.2f} | {res['mrr']:.2f} | {res['top1_score_mean']:.3f} "
+                  f"| {clean_pass:.0%} |")
 
-    # 指标打平时取更简单的方案（不上 rerank）
-    best_label = max(results, key=lambda k: (results[k]["recall@3"], results[k]["mrr"],
-                                             not results[k]["has_reranker"]))
+    # 选择顺序：生产截断位召回 → 更简单的链路 → MRR。
+    # 把 MRR 排在简单性之前，会选出操作点上并无增益的 rerank，白多一个模型与延迟
+    best_label = max(results, key=lambda k: (results[k][K], not results[k]["has_reranker"],
+                                              results[k]["mrr"]))
     best = results[best_label]
+    tied = [lbl for lbl in results
+            if lbl != best_label and results[lbl][K] == best[K]]
     neg_sorted = sorted(best["neg_top1"])
     p90 = neg_sorted[min(len(neg_sorted) - 1, int(len(neg_sorted) * 0.9))]
-    md += ["", f"最优档位：**{best_label}**（指标相同时优先无 rerank 的简单链路）",
+    md += ["", f"最优档位：**{best_label}**"
+                "（选择顺序：生产截断位召回 → 更简单的链路 → MRR）",
+                *( [f"- 在 recall@{PROD_TOP_K} 上与 {'、'.join(tied)} 打平，"
+                    "故保留无 rerank 的简单链路；rerank 作为扩容升级路径备用"
+                    "（触发线见 PRD §5.3）。"] if tied else []),
            "", "## 逐样本排名（1 = 正确条款排第一）", "",
            "| PR | 期望条款 | 排名 |", "|---|---|---|"]
     for pr, expected, rank in best["details"]:

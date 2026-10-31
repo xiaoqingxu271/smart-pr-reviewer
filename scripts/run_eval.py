@@ -69,7 +69,9 @@ TYPE_TO_RULE = {
     "command_injection": "SEC-004",
     "path_traversal": "SEC-005",
     "weak_hash": "SEC-006",
-    "tls_verification_disabled": "SEC-006",
+    # SEC-006 原本一条管两件事（弱哈希 + 关闭证书校验），两个主题的示例会把该条款
+    # 向量拉向两个方向、互相稀释。拆成两条后各自检索都变准（PRD §5.3「一条款一件事」）。
+    "tls_verification_disabled": "SEC-017",
     "code_injection": "SEC-008",
     "xss": "SEC-009",
     "route_not_registered": "SEC-010",
