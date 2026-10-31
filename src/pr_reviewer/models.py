@@ -124,3 +124,4 @@ class ReviewRequest(BaseModel):
     head_branch: str | None = None
     repo_url: str | None = None
     pr_number: int | None = None
+    post_comments: bool = False         # 由 webhook 置位：结果发行内评论回 PR

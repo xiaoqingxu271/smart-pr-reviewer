@@ -15,22 +15,25 @@ from __future__ import annotations
 import uuid
 from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import PlainTextResponse
 
 from pr_reviewer.config import Settings, get_settings
 from pr_reviewer.log import get_logger
 from pr_reviewer.models import PRReviewResult, ReviewRequest
 from pr_reviewer.pipeline import run_review
+from pr_reviewer.publishing import GitHubPublisher
 from pr_reviewer.report import render_markdown
 from pr_reviewer.sources import RepoNotAllowed, fetch_diff, load_contents
 from pr_reviewer.store import ResultCache, TaskStore
 from pr_reviewer.tasks import QueueFull, TaskRunner
+from pr_reviewer.webhooks import parse_webhook
 
 GENERIC_FAILURE = "审查未完成：服务端内部错误，请携带 review_id 联系管理员"
 
 
-def create_app(settings: Settings | None = None, llm=None, retriever=None) -> FastAPI:
+def create_app(settings: Settings | None = None, llm=None, retriever=None,
+               publisher=None) -> FastAPI:
     settings = settings or get_settings()
     runner = TaskRunner(settings.max_concurrent_reviews, settings.max_pending_reviews)
 
@@ -57,6 +60,13 @@ def create_app(settings: Settings | None = None, llm=None, retriever=None) -> Fa
             return StandardsRetriever(settings)
         except Exception:  # noqa: BLE001 — ChromaDB 不可用 → 无 RAG 降级（PRD §6.3）
             return None
+
+    def _publisher():
+        """结果写回 PR 的发布器；没配 token 就是 None（只出报告，不发评论）。"""
+        if publisher is not None:
+            return publisher
+        return GitHubPublisher(settings.github_token, settings.github_api_base) \
+            if settings.github_token else None
 
     def require_token(authorization: str | None = Header(default=None)) -> None:
         if not settings.api_token:
@@ -89,6 +99,23 @@ def create_app(settings: Settings | None = None, llm=None, retriever=None) -> Fa
             cache.put(key, payload, report)
             log.info("stage=task_done task=%s issues=%d duration=%.2fs",
                      task_id, len(result.issues), result.duration_seconds)
+            if request.post_comments:
+                # 缓存命中路径不发评论：key 含 head sha，同一 sha 说明评论已经发过了。
+                # 发布失败只记日志——审查结果已落库，不该因为写评论失败就把任务判失败
+                pub = _publisher()
+                if pub is None:
+                    log.warning("stage=publish_skipped task=%s reason=no_github_token",
+                                task_id)
+                else:
+                    try:
+                        stats = pub.publish(request.repo_url, request.pr_number,
+                                            str(head_ref), result)
+                        log.info("stage=published task=%s inline=%d deferred=%d summary=%s",
+                                 task_id, stats["inline"], len(stats["deferred"]),
+                                 stats["summary_posted"])
+                    except Exception as exc:  # noqa: BLE001
+                        log.warning("stage=publish_failed task=%s error_type=%s detail=%s",
+                                    task_id, type(exc).__name__, str(exc)[:200])
         except RepoNotAllowed as exc:
             store.update(task_id, status="failed", error=str(exc))
             log.warning("stage=task_rejected task=%s reason=%s", task_id, exc)
@@ -105,6 +132,35 @@ def create_app(settings: Settings | None = None, llm=None, retriever=None) -> Fa
             runner.submit(_run_task, task_id, request)
         except QueueFull as exc:
             store.delete(task_id)            # 不留一条永远不会动的 queued 记录
+            raise HTTPException(429, str(exc)) from exc
+        return {"review_id": task_id, "status": "queued"}
+
+    @app.post("/webhook/github")
+    async def github_webhook(request: Request):
+        """GitHub PR 事件入口。鉴权靠 HMAC 签名，因此不走 require_token。
+
+        先读原始字节再验签：验签通过前不解析、不信任内容。
+        """
+        raw = await request.body()
+        if not settings.webhook_secret:
+            raise HTTPException(503, "Webhook 未启用：服务端需配置 WEBHOOK_SECRET")
+        try:
+            review = parse_webhook(settings.webhook_secret, raw,
+                                   request.headers.get("x-hub-signature-256"),
+                                   request.headers.get("x-github-event"))
+        except ValueError:
+            raise HTTPException(403, "签名校验失败") from None
+        if review is None:
+            return {"ignored": True}
+        if not _publisher():
+            # 没人收结果的事件不必消耗 LLM 配额：webhook 的价值就是写回 PR
+            return {"ignored": True, "reason": "未配置 GITHUB_TOKEN，无法写回 PR"}
+        task_id = uuid.uuid4().hex[:12]
+        store.create(task_id, review.model_dump(exclude_none=True))
+        try:
+            runner.submit(_run_task, task_id, review)
+        except QueueFull as exc:
+            store.delete(task_id)
             raise HTTPException(429, str(exc)) from exc
         return {"review_id": task_id, "status": "queued"}
 
@@ -130,6 +186,8 @@ def create_app(settings: Settings | None = None, llm=None, retriever=None) -> Fa
         probe = {"llm_backend": settings.llm_backend, "llm": None, "rag": None,
                  "auth_configured": bool(settings.api_token),
                  "local_mode_allowed": bool(settings.allowed_repo_roots.strip()),
+                 "webhook_configured": bool(settings.webhook_secret),
+                 "publish_enabled": bool(settings.github_token or publisher is not None),
                  "load": runner.stats, "db": None}
         try:
             probe["llm"] = _llm().health()

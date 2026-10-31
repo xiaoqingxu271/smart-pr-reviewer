@@ -53,6 +53,24 @@ src/pr_reviewer/
 └── api/               # FastAPI 异步任务服务（M5）
 ```
 
+## 接进真实 PR 流程（Webhook）
+
+```bash
+# 1. 配好三样东西（.env）：API_TOKEN、WEBHOOK_SECRET、GITHUB_TOKEN
+#    GITHUB_TOKEN 需要 repo 写权限才能发行内评论；缺任一项对应能力会 fail-closed 停用
+# 2. 暴露服务（内网穿透或反代），在仓库 Webhooks 里填：
+#    URL:    https://<你的服务>/webhook/github
+#    Content type: application/json
+#    Secret: 与 WEBHOOK_SECRET 一致
+#    Events: Pull request
+# 3. 之后每次 PR opened / synchronize / reopened，问题会作为行内评论出现在代码行下面，
+#    并附一条摘要评论（含命中的规范条款号与原文摘录）
+curl -H "Authorization: Bearer $API_TOKEN" localhost:8000/health   # 看 publish_enabled
+```
+
+只配 webhook 没配 `GITHUB_TOKEN` 时事件会被**明确忽略**（返回 `ignored`）而不是白烧
+LLM 配额——审完没人看的结果不该花钱。
+
 ## 里程碑进度
 
 - [x] M1 Diff 提取 + 行号映射 + 噪音过滤（测试覆盖）

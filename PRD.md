@@ -262,6 +262,19 @@ class PRReviewResult(BaseModel):
 | `/review/{id}` | GET | 查询状态：`queued / running / completed / failed`，完成后返回 `PRReviewResult` |
 | `/review/{id}/report` | GET | 下载 Markdown 格式报告 |
 | `/health` | GET | 健康检查（含 LLM 后端连通性、ChromaDB 状态） |
+| `/webhook/github` | POST | GitHub PR 事件入口：验签后排队审查，完成后把问题写成**行内评论**回 PR |
+
+**Webhook 与写回（价值闭环）**：
+- 鉴权方式是 HMAC-SHA256 签名（`X-Hub-Signature-256`），不走 Bearer token——但**不是**
+  免鉴权：未配 `WEBHOOK_SECRET` 时该端点 503 停用；验签必须用**原始请求字节**且
+  比较走常量时间（`hmac.compare_digest`）；
+- 只处理 `pull_request` 的 `opened / synchronize / reopened`，其余事件直接返回 ignored
+  且**不消耗 LLM 配额**；未配置 `GITHUB_TOKEN`（无处写回）时同样忽略，避免"审完没人看"；
+- 写回内容：每个 issue 一条行内评论（含风险等级、建议、命中的规范条款号与原文摘录），
+  外加一条摘要评论（整体结论 + 降级声明）。GitHub 对不在 diff 覆盖范围内的行返回 422，
+  此时该条目**退进摘要评论**而不是丢弃；
+- 发布失败绝不影响审查结果落库与任务状态（独立 try/except + `stage=publish_failed` 日志）；
+- 同一 head sha 命中缓存时不重复发评论（缓存 key 含 sha，避免同一提交刷出两套评论）。
 
 - 请求体（Pydantic 校验）：`{"mode": "local" | "api", "repo_path"?, "base_branch"?, "head_branch"?, "repo_url"?, "pr_number"?}`；
 - 后台任务执行（FastAPI `BackgroundTasks` 或 asyncio），不阻塞请求；

@@ -6,6 +6,8 @@
 - 缓存 key 用 diff 内容而不是分支名：force-push 之后不得返回上一版报告；
 - 失败时给调用方友好文案，异常细节只进日志。
 """
+import hashlib
+import hmac
 import json
 import threading
 import time
@@ -19,6 +21,7 @@ from pr_reviewer.models import DiffResult, FileChange
 from tests.test_pipeline import ScriptLLM
 
 TOKEN = "test-token"
+WEBHOOK_SECRET = "whsec-test-123"
 AUTH = {"Authorization": f"Bearer {TOKEN}"}
 
 FILE_CHANGE = [FileChange(file_path="app/a.py", change_type="added", changed_lines=[1, 2])]
@@ -73,14 +76,14 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr(main_mod, "fetch_diff", fake_fetch)
     monkeypatch.setattr(main_mod, "load_contents", fake_contents)
 
-    def make_app(script=None, token=TOKEN, llm=None, **settings_kw):
+    def make_app(script=None, token=TOKEN, llm=None, publisher=None, **settings_kw):
         settings = Settings(_env_file=None, chroma_dir=tmp_path / ".chroma",
                             reports_dir=tmp_path / "reports",
                             db_path=tmp_path / ".data" / "reviews.sqlite3",
                             embedding_backend="hash", api_token=token, **settings_kw)
         app = create_app(settings,
                          llm=llm or ScriptLLM(script or list(SCRIPT), usage=7),
-                         retriever=None)
+                         retriever=None, publisher=publisher)
         return TestClient(app)
 
     return make_app, state
@@ -221,6 +224,68 @@ def test_overload_rejects_cleanly_instead_of_drowning(env):
         time.sleep(0.05)
     assert detail["status"] == "completed"
     assert detail["result"]["summary"] == "a.py 存在硬编码密钥。"
+
+
+class RecordingPublisher:
+    """替身发布器：验证 webhook 走完"审查 → 写回 PR"闭环，不联网。"""
+
+    def __init__(self):
+        self.calls = []
+
+    def publish(self, repo_url, pr_number, commit_sha, result):
+        self.calls.append({"repo": repo_url, "pr": pr_number, "sha": commit_sha,
+                           "issues": len(result.issues)})
+        return {"inline": len(result.issues), "deferred": [], "summary_posted": True}
+
+
+def signed(body: bytes, secret: str = WEBHOOK_SECRET) -> str:
+    return "sha256=" + hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+
+
+def webhook_body(action="opened") -> bytes:
+    return json.dumps({"action": action,
+                       "repository": {"html_url": "https://github.com/acme/api"},
+                       "pull_request": {"number": 7}}).encode()
+
+
+def test_webhook_verifies_signature_then_queues_and_publishes(env):
+    make_app, _ = env
+    stub = RecordingPublisher()
+    client = make_app(publisher=stub, webhook_secret=WEBHOOK_SECRET)
+    body = webhook_body()
+    headers = {"x-github-event": "pull_request", "x-hub-signature-256": signed(body)}
+
+    assert client.post("/webhook/github", content=body).status_code == 403      # 缺签名
+    assert client.post("/webhook/github", content=body, headers={**headers,
+                     "x-hub-signature-256": "sha256=" + "0" * 64}).status_code == 403
+    # 签名有效但事件不相关 → 明确忽略，且不烧 LLM 配额
+    closed = webhook_body("closed")
+    assert client.post("/webhook/github", content=closed,
+                       headers={**headers,
+                                "x-hub-signature-256": signed(closed)}).json() == {
+                           "ignored": True}
+
+    ok = client.post("/webhook/github", content=body, headers=headers)
+    assert ok.status_code == 200 and ok.json()["status"] == "queued"
+    detail = wait_for_state(client, ok.json()["review_id"])
+    assert detail["status"] == "completed"
+    assert stub.calls == [{"repo": "https://github.com/acme/api", "pr": 7,
+                           "sha": "feat", "issues": 1}]
+
+
+def test_webhook_disabled_without_secret_and_without_publisher(env):
+    make_app, _ = env
+    body = webhook_body()
+    headers = {"x-github-event": "pull_request", "x-hub-signature-256": signed(body)}
+    # 没配 secret：端点停用（fail-closed），而不是接受任意伪造事件
+    assert make_app(publisher=RecordingPublisher()).post(
+        "/webhook/github", content=body, headers=headers).status_code == 503
+    # 配了 secret 但没配写回令牌：忽略事件，不白烧 token
+    client = make_app(webhook_secret=WEBHOOK_SECRET)
+    assert client.post("/webhook/github", content=body, headers=headers).json() == {
+        "ignored": True, "reason": "未配置 GITHUB_TOKEN，无法写回 PR"}
+    assert client.get("/health").json()["webhook_configured"] is True
+    assert client.get("/health").json()["publish_enabled"] is False
 
 
 def test_local_repo_path_whitelist_enforced():

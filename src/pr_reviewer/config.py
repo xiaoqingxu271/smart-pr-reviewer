@@ -68,6 +68,11 @@ class Settings(BaseSettings):
     # API 模式取文件内容：先做一次 shallow fetch（默认），失败退回逐文件接口。
     # 关掉它就只用逐文件接口——30 文件的 PR 会发 30 次请求，容易撞限额。
     use_clone_fetch: bool = True
+    # Webhook（PRD §6.1 落地入口）：HMAC 密钥留空 = /webhook/github 停用（fail-closed）
+    webhook_secret: str = ""
+    # 写回 PR 的令牌（行内评论 + 摘要评论）。留空 = 只出报告，不发评论
+    github_token: str = ""
+    github_api_base: str = "https://api.github.com"
 
     # 路径
     standards_md_path: Path = Path("docs/研发代码安全规范.md")
