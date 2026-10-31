@@ -59,8 +59,14 @@ def sweep(threshold, margin: float, settings: Settings, llm,
                    and type_match(i, gt["type"]) for i in result.issues):
                 matched += 1
                 hit += 1
+        # 留下 issue 摘要：否则"无 RAG 也命中"这种反常结果无法判断是模型真有常识，
+        # 还是判据太松（描述引用代码行导致关键词误配）
+        digest = "; ".join(f"[{i.issue_type}] {i.issue_description[:70]}"
+                           for i in result.issues[:2]) or "（未报问题）"
         rows.append((entry["pr"], hit, len(entry["vulnerabilities"]),
-                     sorted({r for i in result.issues for r in i.related_rules})))
+                     sorted({r for i in result.issues for r in i.related_rules}), digest,
+                     # 区分"模型漏检"与"这块根本没审成"（限流打死时摘要也是空的）
+                     result.review_errors))
     return {"label": label, "threshold": threshold, "matched": matched, "total": total,
             "recall": matched / total if total else 0.0,
             "cite_rate": cited / issued if issued else 0.0,
@@ -114,9 +120,11 @@ def main() -> None:
     lines += ["", "## 逐 PR 明细（命中的规范条款）", ""]
     for r in results:
         lines += [f"### 档位 {r['label']}", "",
-                  "| PR | 漏洞命中 | 引用条款 |", "|---|---|---|"]
-        lines += [f"| {pr} | {hit}/{n} | {', '.join(rules) or '（无）'} |"
-                  for pr, hit, n, rules in r["rows"]]
+                  "| PR | 漏洞命中 | 引用条款 | 失败块 | 检出摘要 |",
+                  "|---|---|---|---|---|"]
+        lines += [f"| {pr} | {hit}/{n} | {', '.join(rules) or '（无）'} | {errs} | "
+                  f"{digest.replace('|', '/')} |"
+                  for pr, hit, n, rules, digest, errs in r["rows"]]
         lines.append("")
     any_errors = any(r["errors"] for r in results)
     if any_errors:

@@ -39,10 +39,13 @@ TYPE_KEYWORDS = {
     "tls_verification_disabled": ["verify", "tls", "证书", "校验"],
     "code_injection": ["eval", "exec", "注入", "执行"],
     "xss": ["xss", "innerhtml", "脚本", "跨站"],
-    # 组织私有约定类：模型常把它归成 style/logic，不是 security
-    "route_not_registered": ["gateway", "路由", "route", "注册", "对外暴露"],
-    "db_access_outside_repository": ["repository", "仓储", "直连", "连接", "分层"],
-    "internal_call_without_client": ["internal_client", "内部服务", "鉴权", "服务发现"],
+    # 私有约定类：关键词只认「封装层的专有名字」。
+    # 不能用 route / 连接 / 内部 这类通用词——模型描述问题时常直接引用代码行
+    # （"def ... @router.get(...)"），于是无 RAG 也能被关键词判成命中，
+    # 那是判据太松，不是模型本事。
+    "route_not_registered": ["gateway"],
+    "db_access_outside_repository": ["repository", "仓储", "dao"],
+    "internal_call_without_client": ["internal_client"],
 }
 
 # 私有约定类违规：判定只看位置与描述关键词，不要求 issue_type == "security"
