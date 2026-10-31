@@ -1,5 +1,7 @@
 # PR 智能审查与总结工具
 
+[![CI](https://github.com/xiaoqingxu271/smart-pr-reviewer/actions/workflows/ci.yml/badge.svg)](https://github.com/xiaoqingxu271/smart-pr-reviewer/actions/workflows/ci.yml)
+
 输入 PR Diff，输出包含风险点、修改建议、关联规范条款与 PR 摘要的结构化报告。
 完整需求见 [PRD.md](PRD.md)。
 
