@@ -129,6 +129,22 @@ def main() -> None:
     any_errors = any(r["errors"] for r in results)
     if any_errors:
         lines.insert(3, "> ⚠️ 有审查失败的块（多为限流/超时），该组数字被低估，需重跑。")
+
+    # 有 off 档时顺手算显著性：n 很小时"差几个"没有 p 值可信
+    offs = next((r for r in results if r["label"].startswith("off")), None)
+    if offs and len(results) > 1:
+        for r in results:
+            if r is offs:
+                continue
+            try:
+                from scipy.stats import fisher_exact
+                table = [[r["matched"], r["total"] - r["matched"]],
+                         [offs["matched"], offs["total"] - offs["matched"]]]
+                _, p = fisher_exact(table, alternative="greater")
+                lines += ["", f"显著性（Fisher 单侧精确检验，{r['label']} vs off）：**p = {p:.4f}**"
+                          f"{'，0.05 水平下显著' if p < 0.05 else '，未达 0.05 显著性'}"]
+            except ImportError:      # 没装 scipy 时跳过，不影响主报表
+                pass
     Path(args.out).write_text("\n".join(lines) + "\n", encoding="utf-8")
     print(f"saved -> {args.out}")
     failed = sum(r["errors"] for r in results)
