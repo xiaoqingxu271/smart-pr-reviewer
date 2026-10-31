@@ -59,6 +59,28 @@ CONVENTION_TYPES = {"route_not_registered", "db_access_outside_repository",
                     "money_as_float", "raw_exception_leaked",
                     "cachekey_concatenated"}
 
+# 漏洞类型 → 规范条款号。**唯一定义处**，bench / check_retrieval / threshold_sweep
+# 都从这里导入，避免三份映射各自漂移（同一份标注在不同工具里算出不同结果过）。
+# None 表示规范库暂未覆盖该类型（覆盖率缺口，不是检索缺陷）。
+TYPE_TO_RULE = {
+    "hardcoded_secret": "SEC-001",
+    "sql_injection": "SEC-002",
+    "unsafe_deserialization": "SEC-003",
+    "command_injection": "SEC-004",
+    "path_traversal": "SEC-005",
+    "weak_hash": "SEC-006",
+    "tls_verification_disabled": "SEC-006",
+    "code_injection": "SEC-008",
+    "xss": "SEC-009",
+    "route_not_registered": "SEC-010",
+    "db_access_outside_repository": "SEC-011",
+    "internal_call_without_client": "SEC-012",
+    "task_not_registered": "SEC-013",
+    "raw_exception_leaked": "SEC-014",
+    "money_as_float": "SEC-015",
+    "cachekey_concatenated": "SEC-016",
+}
+
 
 def load_pr_dir(pr_dir: Path) -> tuple[DiffResult, dict[str, str]]:
     """目录即一个 PR：所有文件视为新增（全行变更）。
@@ -146,6 +168,7 @@ def make_llm_and_retriever(args):
 
 
 def type_match(issue, gt_type: str) -> bool:
+    """严格口径：描述里出现类型关键词或类型名。"""
     if issue.issue_type != "security" and gt_type not in CONVENTION_TYPES:
         return False
     desc = issue.issue_description.lower()
@@ -153,6 +176,28 @@ def type_match(issue, gt_type: str) -> bool:
     if gt_type in desc or gt_type.replace("_", " ") in desc:
         return True
     return any(k in desc for k in TYPE_KEYWORDS.get(gt_type, []))
+
+
+def cited_match(issue, gt_type: str) -> bool:
+    """引用口径：issue 的 related_rules 里出现了该漏洞对应的条款。
+
+    修的是判据假阴性——模型复述了违反点（"用 float 累加金额"）却没写关键词表要求的
+    英文专名（"Money"），严格口径会把它算成漏检。引用不偏袒实验组：无 RAG 时
+    模型手里没有条款可引，这条路径结构上用不了。
+    """
+    rule = TYPE_TO_RULE.get(gt_type)
+    return bool(rule) and rule in issue.related_rules
+
+
+def gt_match(issues, gt: dict) -> tuple[bool, bool]:
+    """返回 (严格口径命中, 引用口径命中)。位置条件两种口径共用。"""
+    strict = cited = False
+    for issue in issues:
+        if issue.file_path != gt["file_path"] or abs(issue.line_number - gt["line"]) > 3:
+            continue
+        strict = strict or type_match(issue, gt["type"])
+        cited = cited or cited_match(issue, gt["type"])
+    return strict, cited
 
 
 def evaluate(llm, retriever, settings: Settings, limit: int | None = None,
@@ -166,7 +211,7 @@ def evaluate(llm, retriever, settings: Settings, limit: int | None = None,
     ground_truth = json.loads(GT_PATH.read_text(encoding="utf-8"))
     if limit:
         ground_truth = ground_truth[:limit]
-    total, matched = 0, 0
+    total = matched = strict_hits = cited_hits = 0
     tokens_before = getattr(llm, "token_usage", 0)
     duration = 0.0
     errors = 0                 # 限流/超时/解析耗尽的失败块数：>0 说明本轮数据不可信
@@ -184,10 +229,10 @@ def evaluate(llm, retriever, settings: Settings, limit: int | None = None,
         pr_matched = 0
         for gt in entry["vulnerabilities"]:
             total += 1
-            hit = any(i.file_path == gt["file_path"]
-                      and abs(i.line_number - gt["line"]) <= 3
-                      and type_match(i, gt["type"])
-                      for i in result.issues)
+            strict, hit_by_rule = gt_match(result.issues, gt)
+            hit = strict or hit_by_rule          # 对外报命中口径：任一判据成立
+            strict_hits += strict
+            cited_hits += hit_by_rule
             matched += hit
             pr_matched += hit
         rows.append((entry["pr"], len(entry["vulnerabilities"]), pr_matched,
@@ -212,6 +257,11 @@ def evaluate(llm, retriever, settings: Settings, limit: int | None = None,
     return {
         "recall": matched / total if total else 0.0,
         "matched": matched, "total": total,
+        # 两个判据分别报告：严格口径可能把"复述了违反点但没写专名"误判为漏检，
+        # 只报其中一个数字都会误导读者
+        "recall_strict": strict_hits / total if total else 0.0,
+        "recall_cited": cited_hits / total if total else 0.0,
+        "strict_hits": strict_hits, "cited_hits": cited_hits,
         "fp_per_pr": fp_total / n_clean if n_clean else 0.0,
         "fp_total": fp_total,
         "rows": rows, "fp_rows": fp_rows,
@@ -227,7 +277,9 @@ def render_md(mode: str, rag: bool, r: dict) -> str:
     lines = [
         f"# 评测结果（LLM={mode}，RAG={'on' if rag else 'off'}）",
         "",
-        f"- **召回率：{r['recall']:.0%}**（{r['matched']}/{r['total']}，PRD 目标 ≥ 80%）",
+        f"- **召回率：{r['recall']:.0%}**（{r['matched']}/{r['total']}，PRD 目标 ≥ 80%）"
+        f"｜严格口径 {r['recall_strict']:.0%}（{r['strict_hits']}/{r['total']}）"
+        f"｜引用口径 {r['recall_cited']:.0%}（{r['cited_hits']}/{r['total']}）",
         f"- **误报：平均 {r['fp_per_pr']:.1f} 个/干净 PR**（共 {r['fp_total']}，PRD 目标 ≤ 2）",
         f"- 漏洞 PR {r['n_vuln_prs']} 个，干净 PR {r['n_clean']} 个"
         f"，失败块 {r['errors']}，token {r['tokens']:,}",

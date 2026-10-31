@@ -20,19 +20,9 @@ sys.path.insert(0, str(ROOT / "scripts"))
 from pr_reviewer.config import get_settings
 from pr_reviewer.pipeline import _select_chunks
 from pr_reviewer.rag import INDEX_META_FILE, StandardsRetriever
-from run_eval import FIXTURES, GT_PATH, load_pr_dir
+from run_eval import FIXTURES, GT_PATH, TYPE_TO_RULE, load_pr_dir
 
-TYPE_TO_RULE = {
-    "hardcoded_secret": "SEC-001", "sql_injection": "SEC-002",
-    "unsafe_deserialization": "SEC-003", "command_injection": "SEC-004",
-    "path_traversal": "SEC-005", "weak_hash": "SEC-006",
-    "tls_verification_disabled": "SEC-006", "code_injection": "SEC-008",
-    "xss": "SEC-009", "route_not_registered": "SEC-010",
-    "db_access_outside_repository": "SEC-011",
-    "internal_call_without_client": "SEC-012",
-    "task_not_registered": "SEC-013", "money_as_float": "SEC-015",
-    "raw_exception_leaked": "SEC-014", "cachekey_concatenated": "SEC-016",
-}
+# 漏洞类型 → 条款号由 run_eval.TYPE_TO_RULE 单点维护，避免三处漂移
 
 settings = get_settings()
 r = StandardsRetriever(settings)

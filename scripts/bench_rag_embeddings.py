@@ -32,30 +32,12 @@ sys.path.insert(0, str(ROOT / "scripts"))
 from pr_reviewer.config import Settings
 from pr_reviewer.pipeline import _select_chunks
 from pr_reviewer.rag import HashEmbedder, _cosine, parse_standards_md
-from run_eval import FIXTURES, load_pr_dir
+from run_eval import FIXTURES, TYPE_TO_RULE, load_pr_dir
 
 GT_PATH = ROOT / "tests" / "ground_truth.json"
 STANDARDS = ROOT / "docs" / "研发代码安全规范.md"
 
-# 漏洞类型 → 规范条款。None 表示规范库当前没有覆盖该类型（覆盖率缺口）
-TYPE_TO_RULE = {
-    "hardcoded_secret": "SEC-001",
-    "sql_injection": "SEC-002",
-    "unsafe_deserialization": "SEC-003",
-    "command_injection": "SEC-004",
-    "path_traversal": "SEC-005",
-    "weak_hash": "SEC-006",
-    "tls_verification_disabled": "SEC-006",
-    "code_injection": "SEC-008",
-    "xss": "SEC-009",
-    "route_not_registered": "SEC-010",
-    "db_access_outside_repository": "SEC-011",
-    "internal_call_without_client": "SEC-012",
-    "task_not_registered": "SEC-013",
-    "raw_exception_leaked": "SEC-014",
-    "money_as_float": "SEC-015",
-    "cachekey_concatenated": "SEC-016",
-}
+# 漏洞类型 → 规范条款：由 run_eval.TYPE_TO_RULE 单点维护（三份副本会漂移）
 
 # BGE 中文官方推荐的检索指令前缀（query 侧，doc 侧不加）
 BGE_QUERY_PREFIX = "为这个句子生成表示以用于检索相关文章："

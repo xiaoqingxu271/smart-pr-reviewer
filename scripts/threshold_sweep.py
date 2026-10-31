@@ -25,7 +25,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 from pr_reviewer.config import Settings
 from pr_reviewer.pipeline import run_review
 from pr_reviewer.rag import StandardsRetriever
-from run_eval import FIXTURES, GT_PATH, load_pr_dir, type_match
+from run_eval import FIXTURES, GT_PATH, gt_match, load_pr_dir
 
 
 def sweep(threshold, margin: float, settings: Settings, llm,
@@ -40,6 +40,7 @@ def sweep(threshold, margin: float, settings: Settings, llm,
         settings.retrieval_margin = margin
     active = retriever if rag_on else None
     matched = total = errors = cited = issued = 0
+    strict_hits = cited_hits = 0
     tokens_before = getattr(llm, "token_usage", 0)
     wanted = [frag for frag in only.split(",") if frag.strip()]
     rows = []
@@ -54,11 +55,12 @@ def sweep(threshold, margin: float, settings: Settings, llm,
         hit = 0
         for gt in entry["vulnerabilities"]:
             total += 1
-            if any(i.file_path == gt["file_path"]
-                   and abs(i.line_number - gt["line"]) <= 3
-                   and type_match(i, gt["type"]) for i in result.issues):
+            strict, by_rule = gt_match(result.issues, gt)
+            if strict or by_rule:
                 matched += 1
                 hit += 1
+            strict_hits += strict
+            cited_hits += by_rule
         # 留下 issue 摘要：否则"无 RAG 也命中"这种反常结果无法判断是模型真有常识，
         # 还是判据太松（描述引用代码行导致关键词误配）
         digest = "; ".join(f"[{i.issue_type}] {i.issue_description[:70]}"
@@ -69,6 +71,7 @@ def sweep(threshold, margin: float, settings: Settings, llm,
                      result.review_errors))
     return {"label": label, "threshold": threshold, "matched": matched, "total": total,
             "recall": matched / total if total else 0.0,
+            "strict_hits": strict_hits, "rule_cited_hits": cited_hits,
             "cite_rate": cited / issued if issued else 0.0,
             "errors": errors, "tokens": getattr(llm, "token_usage", 0) - tokens_before,
             "rows": rows}
@@ -112,10 +115,11 @@ def main() -> None:
              f"- 模型：`{settings.model_name}`（{settings.llm_backend}），"
              f"embedding：`{settings.embedding_model}`，规范库 {retriever.size()} 条款",
              f"- 每组跑完 {results[0]['total']} 个标注漏洞；margin 固定 {margin}", "",
-             "| top1 门限 | 漏洞召回率 | 条款可追溯率 | 失败块 | token |",
-             "|---|---|---|---|---|"]
+             "| 档位 | 漏洞召回率 | 其中严格口径 | 其中引用口径 | 条款可追溯率 | 失败块 | token |",
+             "|---|---|---|---|---|---|---|"]
     for r in results:
         lines.append(f"| {r['label']} | {r['recall']:.0%}（{r['matched']}/{r['total']}）"
+                     f"| {r['strict_hits']}/{r['total']} | {r['rule_cited_hits']}/{r['total']} "
                      f"| {r['cite_rate']:.0%} | {r['errors']} | {r['tokens']:,} |")
     lines += ["", "## 逐 PR 明细（命中的规范条款）", ""]
     for r in results:
