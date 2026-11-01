@@ -146,7 +146,7 @@ curl -s localhost:8000/health | python -m json.tool
 |---|---|---|
 | `API_TOKEN` | 空 | **`/review*` 全部 503 停用**（fail-closed，故意的） |
 | `WEBHOOK_SECRET` | 空 | `/webhook/github` 503 停用；配了才能接 GitHub 回调 |
-| `GITHUB_TOKEN` | 空 | 不写回 PR；且**webhook 事件会被明确忽略**（不白烧 LLM 配额） |
+| `GITHUB_TOKEN` | 空 | 一个 token 管两侧：**读**（取 diff / 文件内容，未认证只有 60 次/小时，一个 PR 就撞墙）和**写**（发行内评论，需要 `Pull requests: Write`）。留空时不写回，且 **webhook 事件会被明确忽略**（不白烧 LLM 配额） |
 | `ALLOWED_REPO_ROOTS` | 空 | `mode=local` 禁用。要审本机仓库才填，且只填必要目录 |
 | `EMBEDDING_BACKEND` | `local` | 改 `ollama` 时注意 `bge-m3` **不需要**检索指令，要把 `EMBEDDING_QUERY_PREFIX` 置空并重标阈值 |
 | `RETRIEVAL_SCORE_THRESHOLD` | `0.45` | 判 top1。抬太高会整块拒答（可追溯率归零），调低会塞无关条款 |

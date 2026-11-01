@@ -3,6 +3,7 @@ import httpx
 import pytest
 
 import pr_reviewer.sources as sources
+from pr_reviewer.diff_extractor import DiffResult
 from pr_reviewer.models import ReviewRequest
 
 GH_DIFF = """diff --git a/app/x.py b/app/x.py
@@ -31,8 +32,9 @@ def test_fetch_diff_github(monkeypatch):
         return httpx.Response(200, json=GH_PR_JSON)
 
     monkeypatch.setattr(sources, "_github_client",
-                        lambda: httpx.Client(transport=httpx.MockTransport(handler),
-                                             base_url="https://api.github.com"))
+                        lambda settings=None: httpx.Client(
+                            transport=httpx.MockTransport(handler),
+                            base_url="https://api.github.com"))
     diff, sha = sources.fetch_diff_github("https://github.com/o/r", 7)
     assert sha == "abc123"
     assert diff.files[0].file_path == "app/x.py"
@@ -158,7 +160,7 @@ def test_clone_failure_falls_back_to_per_file_api(monkeypatch):
 
     called: dict[str, bool] = {}
 
-    def fake_github(url, ref, paths):
+    def fake_github(url, ref, paths, settings=None):
         called["yes"] = True
         return {"f.py": "x"}
 
@@ -176,8 +178,64 @@ def test_clone_can_be_disabled_by_config(monkeypatch):
 
     used: dict[str, bool] = {}
     monkeypatch.setattr(sources, "load_contents_github",
-                        lambda url, ref, paths: used.setdefault("api", True) or {})
+                        lambda url, ref, paths, settings=None:
+                        used.setdefault("api", True) or {})
     request = ReviewRequest(mode="api", repo_url="https://github.com/o/r", pr_number=1)
     sources.load_contents(request, "sha", ["f.py"],
                           Settings(_env_file=None, use_clone_fetch=False))
     assert used.get("api") is True
+
+
+def test_github_token_comes_from_settings_not_only_env(monkeypatch):
+    """.env 里的 GITHUB_TOKEN 必须同时管住"读"和"写"。
+
+    pydantic-settings 只把 .env 灌进 Settings 对象，不写 os.environ。取数路径以前只读
+    env，于是"配了 token 却没认证"——未认证限额 60 次/小时，一个 PR 就撞墙。
+    """
+    from pr_reviewer.config import Settings
+
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.delenv("GITHUB_API_BASE", raising=False)
+    with sources._github_client(Settings(_env_file=None, github_token="tok-from-env-file")) as c:
+        assert c.headers["Authorization"] == "Bearer tok-from-env-file"
+        assert c.base_url == "https://api.github.com"
+    # 环境变量仍然兜底（脚本 / 容器里直接 export 的场景）
+    monkeypatch.setenv("GITHUB_TOKEN", "tok-from-env")
+    with sources._github_client(Settings(_env_file=None)) as c:
+        assert c.headers.get("Authorization") == "Bearer tok-from-env"
+    # Settings 优先于环境变量：.env 是运维唯一要改的地方
+    with sources._github_client(Settings(_env_file=None, github_token="settings wins")) as c:
+        assert c.headers["Authorization"] == "Bearer settings wins"
+    # 都没有 → 不带认证头，而不是带一个 "Bearer "（GitHub 会当无效 token 直接 401）
+    monkeypatch.delenv("GITHUB_TOKEN")
+    with sources._github_client(Settings(_env_file=None)) as c:
+        assert "Authorization" not in c.headers
+    # API host 也要能换，且与写回侧共用同一个配置项
+    with sources._github_client(Settings(_env_file=None,
+                                        github_api_base="https://gh.internal/api/v3")) as c:
+        assert str(c.base_url).rstrip("/") == "https://gh.internal/api/v3"
+
+
+def test_fetch_diff_passes_settings_to_github(monkeypatch):
+    """分发层必须把 settings 带到取数层，否则上面的认证解析白写。"""
+    from pr_reviewer.config import Settings
+
+    seen: dict[str, object] = {}
+
+    def fake(url, pr_number, settings=None):
+        seen["settings"] = settings
+        return DiffResult(files=[]), "sha"
+
+    monkeypatch.setattr(sources, "fetch_diff_github", fake)
+    request = ReviewRequest(mode="api", repo_url="https://github.com/o/r", pr_number=3)
+    settings = Settings(_env_file=None, github_token="t")
+    assert sources.fetch_diff(request, settings)[1] == "sha"
+    assert seen["settings"] is settings
+
+
+def test_owner_repo_strips_any_host():
+    assert sources._owner_repo("https://github.com/acme/api") == "acme/api"
+    assert sources._owner_repo("https://github.com/acme/api/") == "acme/api"
+    assert sources._owner_repo("https://github.com/acme/api.git") == "acme/api"
+    # 自建 / 企业版换 host 时不能把整条 URL 当仓库名塞进接口路径
+    assert sources._owner_repo("https://git.corp/acme/api") == "acme/api"
