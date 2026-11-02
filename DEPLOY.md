@@ -146,7 +146,7 @@ curl -s localhost:8000/health | python -m json.tool
 |---|---|---|
 | `API_TOKEN` | 空 | **`/review*` 全部 503 停用**（fail-closed，故意的） |
 | `WEBHOOK_SECRET` | 空 | `/webhook/github` 503 停用；配了才能接 GitHub 回调 |
-| `GITHUB_TOKEN` | 空 | 一个 token 管两侧：**读**（取 diff / 文件内容，未认证只有 60 次/小时，一个 PR 就撞墙）和**写**（发行内评论，需要 `Pull requests: Write`）。留空时不写回，且 **webhook 事件会被明确忽略**（不白烧 LLM 配额） |
+| `GITHUB_TOKEN` | 空 | 一个 token 管两侧：**读**（取 diff / 文件内容，未认证只有 60 次/小时，一个 PR 就撞墙）和**写**。fine-grained 令牌要勾**三个**：`Contents: Read-only`（取数）、`Pull requests: Read and write`（行内评论）、**`Issues: Read and write`**（摘要评论走 `issues/{n}/comments` 接口，漏勾它评论全 403）；classic 令牌勾 `repo` 一项即可。留空时不写回，且 **webhook 事件会被明确忽略**（不白烧 LLM 配额） |
 | `ALLOWED_REPO_ROOTS` | 空 | `mode=local` 禁用。要审本机仓库才填，且只填必要目录 |
 | `EMBEDDING_BACKEND` | `local` | 改 `ollama` 时注意 `bge-m3` **不需要**检索指令，要把 `EMBEDDING_QUERY_PREFIX` 置空并重标阈值 |
 | `RETRIEVAL_SCORE_THRESHOLD` | `0.45` | 判 top1。抬太高会整块拒答（可追溯率归零），调低会塞无关条款 |
@@ -249,7 +249,8 @@ stage=task_done … stage=published task=… inline=1 deferred=0 summary=True
 | `/review` 返回 503 | 没配 `API_TOKEN` | 配上并重启（这是设计行为，不是 bug） |
 | `/webhook/github` 403 | 签名不匹配：`WEBHOOK_SECRET` 与仓库侧不一致 | 核对两边密钥一致 |
 | `/webhook/github` 400 并提示 Content type | 仓库 webhook 的 Content type 不是 `application/json`（签名是对的，别去查密钥） | 改成 `application/json` |
-| webhook 返回 `{"ignored":true,"reason":"未配置 GITHUB_TOKEN…"}` | 没配写回令牌 | 加 `Pull requests: Write` 权限的 token |
+| webhook 返回 `{"ignored":true,"reason":"未配置 GITHUB_TOKEN…"}` | 没配写回令牌 | 加带 `Pull requests` + `Issues` 写权限的 token |
+| PR 上一条评论都没有，但任务 `completed` | 看 `publish.status`：`failed` 且 errors 里是 `HTTP 403 Resource not accessible by personal access token` → 令牌缺 `Issues` / `Pull requests` 写权限 | 到令牌页补权限（服务不用重启，下次审查即生效） |
 | `/health` 的 `rag.stale=true` | 磁盘上的索引不是当前 embedding 建的（换了后端，或依赖没装齐自动降级成 hash 词袋） | 首次检索会自愈重建，不用手工干预；但要的是标定过的检索质量就 `uv sync --extra embed` 再跑 `check_retrieval` |
 | 报告里没有"命中规范"、`check_retrieval` 召回低 | 索引没建 / embedding 与阈值不匹配 / 降级成了 hash 词袋 | 依次跑 §3 两条命令，看 `/health` 的 `rag.index_size` |
 | 任务一直 `running` | 大 PR 排队中（并发上限默认 2） | 看 `/health` 的 `load.pending`，调 `MAX_CONCURRENT_REVIEWS` |

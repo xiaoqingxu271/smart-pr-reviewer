@@ -59,7 +59,8 @@ src/pr_reviewer/
 
 ```bash
 # 1. 配好三样东西（.env）：API_TOKEN、WEBHOOK_SECRET、GITHUB_TOKEN
-#    GITHUB_TOKEN 需要 repo 写权限才能发行内评论；缺任一项对应能力会 fail-closed 停用
+#    GITHUB_TOKEN 要能读仓库 + 写评论：fine-grained 令牌勾 Contents(读) + Pull requests(读写)
+#    + Issues(读写)——摘要评论走 issues/{n}/comments 接口；缺任一项对应能力 fail-closed 停用
 # 2. 暴露服务（内网穿透或反代），在仓库 Webhooks 里填：
 #    URL:    https://<你的服务>/webhook/github
 #    Content type: application/json

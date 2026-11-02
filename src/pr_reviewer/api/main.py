@@ -110,12 +110,23 @@ def create_app(settings: Settings | None = None, llm=None, retriever=None,
         try:
             stats = pub.publish(request.repo_url, request.pr_number,
                                 str(head_ref), result)
-            log.info("stage=published task=%s inline=%d deferred=%d summary=%s",
-                     task_id, stats["inline"], len(stats["deferred"]),
-                     stats["summary_posted"])
-            return {"status": "posted", "inline": stats["inline"],
-                    "deferred": len(stats["deferred"]),
-                    "summary_posted": stats["summary_posted"]}
+            errors = list(stats.get("errors") or [])
+            # "posted" 必须真的发出去了东西才算：实测过令牌缺权限时两条写请求都 403，
+            # 旧口径会返回 status=posted + inline=0，PR 上空无一物却告诉调用方成功了
+            landed = stats["inline"] or stats["summary_posted"]
+            outcome = {"status": "posted" if landed else "failed",
+                       "inline": stats["inline"], "deferred": len(stats["deferred"]),
+                       "summary_posted": stats["summary_posted"]}
+            if errors:
+                outcome["errors"] = errors[:3]
+            if landed:
+                log.info("stage=published task=%s inline=%d deferred=%d summary=%s",
+                         task_id, stats["inline"], len(stats["deferred"]),
+                         stats["summary_posted"])
+            else:
+                log.warning("stage=publish_nothing_landed task=%s reason=%s",
+                            task_id, "; ".join(errors) or "无评论落地")
+            return outcome
         except Exception as exc:  # noqa: BLE001
             log.warning("stage=publish_failed task=%s error_type=%s detail=%s",
                         task_id, type(exc).__name__, str(exc)[:200])
