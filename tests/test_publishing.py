@@ -94,3 +94,37 @@ def test_retrieval_empty_state_is_reported_as_friendly_note():
         transport=httpx.MockTransport(handler))).publish(
         "https://github.com/acme/api", 14, "sha", make_result(retrieval=stats, issues=[]))
     assert "未匹配到内部规范条款" in seen["body"]
+
+
+def test_422_is_normal_degradation_not_an_error():
+    """行号漂移（422）是预期降级，不该混进 errors——否则日志永远在报警。"""
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "/pulls/" in request.url.path:
+            return httpx.Response(422, json={"message": "Line could not be found"})
+        return httpx.Response(201, json={"id": 2})
+
+    result = GitHubPublisher("tok", client=httpx.Client(
+        transport=httpx.MockTransport(handler))).publish(
+        "https://github.com/acme/api", 12, "sha", make_result())
+    assert result["inline"] == 0 and len(result["deferred"]) == 2
+    assert result["errors"] == [] and result["summary_posted"] is True
+
+
+def test_permission_failure_reports_github_reason_and_keeps_items():
+    """令牌缺权限（403）不能被当成"行号漂移"。
+
+    真实事故：fine-grained 令牌没勾 Issues / Pull requests 写权限，两条写请求都 403，
+    服务却记成 status=posted（旧口径只看有没有抛异常），PR 上空无一物。
+    """
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(403, json={"message": "Resource not accessible by "
+                                                    "personal access token"})
+
+    result = GitHubPublisher("tok", client=httpx.Client(
+        transport=httpx.MockTransport(handler))).publish(
+        "https://github.com/acme/api", 12, "sha", make_result())
+    assert result["inline"] == 0 and result["summary_posted"] is False
+    assert len(result["deferred"]) == 2, "写不进去也不能丢条目"
+    assert len(result["errors"]) == 3, result["errors"]          # 2 次行内 + 1 次摘要
+    assert "Resource not accessible" in result["errors"][0]
+    assert result["errors"][0].startswith("HTTP 403")

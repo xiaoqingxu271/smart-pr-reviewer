@@ -282,8 +282,11 @@ class PRReviewResult(BaseModel):
   能在 PR 上看到评论。先写 completed 再发评论，等于给轮询方一个会撒谎的状态（CI 上就这样
   随机红过一次：写回只有几微秒，本地抢在轮询前面，慢一点的 runner 就复现）；
 - 写回结论记在任务态的 `publish` 字段并随 `GET /review/{id}` 返回：`posted`（含
-  `inline` / `deferred` / `summary_posted` 计数）、`failed`（带异常摘要）、`skipped`
-  （没配 token，或缓存命中没重复发）；
+  `inline` / `deferred` / `summary_posted` 计数）、`failed`（带异常摘要或 GitHub 给的
+  `errors`）、`skipped`（没配 token，或缓存命中没重复发）。**一条评论都没落地时不得报
+  `posted`**：实测过令牌缺权限时两条写请求都 403，旧口径照样返回 posted；
+- 写回失败分两类记账：422 是行号漂移（正常降级，条目退进摘要，不算错误），403/401 是
+  配置问题（带 GitHub 的 message 记进 `errors`）——混为一谈会让人顺着 diff 行号查半天；
 - 同一 head sha 命中缓存时不重复发评论（缓存 key 含 sha，避免同一提交刷出两套评论）。
 
 - 请求体（Pydantic 校验）：`{"mode": "local" | "api", "repo_path"?, "base_branch"?, "head_branch"?, "repo_url"?, "pr_number"?}`；

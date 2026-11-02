@@ -21,6 +21,15 @@ def repo_slug(repo_url: str) -> str:
     return path.strip("/").removesuffix(".git")
 
 
+def _github_reason(resp) -> str:
+    """把 GitHub 的失败响应压成一行可读原因（状态码 + 它自己给的 message）。"""
+    try:
+        message = resp.json().get("message", "")
+    except Exception:  # noqa: BLE001 — 响应体不是 JSON 时不能连日志都写不出来
+        message = ""
+    return f"HTTP {resp.status_code} {message}".strip()
+
+
 def format_issue(issue, excerpt: str | None = None, with_location: bool = True) -> str:
     lines = [f"**{RISK_LABEL[issue.risk_level]} · {issue.issue_description}**"
              f"（{issue.issue_type}）"]
@@ -60,11 +69,17 @@ class GitHubPublisher:
 
     def publish(self, repo_url: str, pr_number: int, commit_sha: str,
                 result: PRReviewResult) -> dict:
-        """返回 {"inline": n, "deferred": [行内失败的问题], "summary_posted": bool}。"""
+        """返回 {"inline", "deferred", "summary_posted", "errors"}。
+
+        `errors` 是这次真实端到端换来的字段：GitHub 返回 403（令牌没给 Issues /
+        Pull requests 写权限）时，只记一个 status=403 会被当成"行号漂移，退进摘要"，
+        运维顺着 diff 行号查半天。422 才是行号问题，其余都是配置问题，必须带上
+        GitHub 自己给的原因。
+        """
         log = get_logger()
         slug = repo_slug(repo_url)
         http = self._http()
-        inline, deferred = 0, []
+        inline, deferred, errors = 0, [], []
         for issue in result.issues:
             excerpt = next((result.rule_excerpts[r] for r in issue.related_rules
                             if r in result.rule_excerpts), None)
@@ -76,16 +91,24 @@ class GitHubPublisher:
             if resp.is_success:
                 inline += 1
             else:
-                # 行号不在 diff 覆盖范围内（常见于合并后行号漂移）：退进摘要评论
-                log.info("stage=inline_deferred pr=%s file=%s line=%s status=%s",
-                         pr_number, issue.file_path, issue.line_number, resp.status_code)
-                deferred.append(issue)
+                deferred.append(issue)                                # 条目绝不静默丢
+                if resp.status_code == 422:
+                    # 行号不在 diff 覆盖范围内（常见于合并后行号漂移）：退进摘要评论
+                    log.info("stage=inline_deferred pr=%s file=%s line=%s status=422",
+                             pr_number, issue.file_path, issue.line_number)
+                else:
+                    errors.append(_github_reason(resp))
+                    log.warning("stage=inline_rejected pr=%s file=%s line=%s reason=%s",
+                                pr_number, issue.file_path, issue.line_number, errors[-1])
 
         summary_body = self._summary_body(result, inline, deferred)
         resp = http.post(self._url(f"/repos/{slug}/issues/{pr_number}/comments"),
                          json={"body": summary_body})
+        if not resp.is_success:
+            errors.append(_github_reason(resp))
+            log.warning("stage=summary_rejected pr=%s reason=%s", pr_number, errors[-1])
         return {"inline": inline, "deferred": deferred,
-                "summary_posted": resp.is_success}
+                "summary_posted": resp.is_success, "errors": errors}
 
     @staticmethod
     def _summary_body(result: PRReviewResult, inline: int, deferred) -> str:

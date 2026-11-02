@@ -381,3 +381,27 @@ def test_retriever_is_built_once_per_app(env, monkeypatch):
     client.get("/health")
     client.post("/review", json=REQUEST, headers=AUTH)
     assert len(made) == 1, f"检索器被重复构造 {len(made)} 次"
+
+
+class NothingLandedPublisher(RecordingPublisher):
+    """GitHub 两条写请求都 403（令牌缺 Issues / Pull requests 写权限）时的样子。"""
+
+    def publish(self, repo_url, pr_number, commit_sha, result):
+        self.calls.append({"repo": repo_url, "pr": pr_number, "sha": commit_sha,
+                           "issues": len(result.issues)})
+        return {"inline": 0, "deferred": list(result.issues), "summary_posted": False,
+                "errors": ["HTTP 403 Resource not accessible by personal access token"]}
+
+
+def test_publish_landing_nothing_is_reported_failed(env):
+    """一条评论都没落地时不能报 posted——调用方会去 PR 上找不存在的东西。"""
+    make_app, _ = env
+    client = make_app(publisher=NothingLandedPublisher(), webhook_secret=WEBHOOK_SECRET)
+    body = webhook_body()
+    headers = {"x-github-event": "pull_request", "x-hub-signature-256": signed(body)}
+    ok = client.post("/webhook/github", content=body, headers=headers)
+    detail = wait_for_state(client, ok.json()["review_id"])
+    assert detail["status"] == "completed"                 # 审查本身是成功的
+    assert detail["publish"]["status"] == "failed"
+    assert "Resource not accessible" in detail["publish"]["errors"][0]
+    assert detail["publish"]["deferred"] == 1
