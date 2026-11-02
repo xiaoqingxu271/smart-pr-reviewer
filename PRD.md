@@ -318,6 +318,7 @@ class PRReviewResult(BaseModel):
 | LLM 超时/限流 | 指数退避重试 3 次，仍失败则该批标记 `review_error`；**不得冒泡中断整份 PR** |
 | 浅取克隆失败 | 自动退回逐文件 contents 接口，并在日志与 `RuntimeWarning` 中说明 |
 | 非 UTF-8 源码 | 依次按 UTF-8 → GB18030 → `replace` 解码，**禁止静默跳过文件**（漏审比报错危险） |
+| 出站 HTTPS 证书校验失败（`CERTIFICATE_VERIFY_FAILED`） | 所有出站请求共用 `net.ssl_context()`＝**操作系统信任库 ∪ certifi**：GitHub 加速类工具与企业 TLS 审计代理签发的根证书只装在系统信任库里，而 httpx 默认只认 certifi，会在取 diff 那一步就断。**禁止 `verify=False`**（等于把令牌交给任何能做中间人的人） |
 | 过载（待处理数超上限） | 返回 429 + 可重试提示，不留下永远不动的任务记录 |
 | ChromaDB 不可用 | 降级为「无 RAG 审查」，报告 header 声明「规范检索不可用」 |
 | 索引存在但为空 | `/health` 的 `rag.available=false`、`index_size=0`——检索空转必须在探活里看得见 |

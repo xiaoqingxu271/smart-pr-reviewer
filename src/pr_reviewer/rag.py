@@ -189,8 +189,14 @@ class OpenAIEmbedder:
 
     def _ensure_client(self):
         if self._client is None:
+            # 延迟导入：本模块刻意不在运行时依赖 openai（见 TYPE_CHECKING）。
+            # http_client 用 httpx2（openai SDK 3.x 的实际依赖），信任策略与其余出站请求一致
+            import httpx2
             from openai import OpenAI
-            self._client = OpenAI(api_key=self.api_key, base_url=self.base_url or None)
+
+            from pr_reviewer.net import ssl_context
+            self._client = OpenAI(api_key=self.api_key, base_url=self.base_url or None,
+                                  http_client=httpx2.Client(verify=ssl_context()))
         return self._client
 
     def embed(self, texts: list[str]) -> list[list[float]]:
