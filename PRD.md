@@ -322,6 +322,7 @@ class PRReviewResult(BaseModel):
 | 过载（待处理数超上限） | 返回 429 + 可重试提示，不留下永远不动的任务记录 |
 | ChromaDB 不可用 | 降级为「无 RAG 审查」，报告 header 声明「规范检索不可用」 |
 | 索引存在但为空 | `/health` 的 `rag.available=false`、`index_size=0`——检索空转必须在探活里看得见 |
+| 索引与当前 embedding 不同空间（换后端/降级） | 首次检索**自愈重建**并告警；`/health` 的 `rag.stale` 提前可见。不修的后果是实测事故：768 维旧索引遇到 256 维查询，`_cosine` 的 strict zip 抛 ValueError，整份审查判 failed |
 | 单文件解析崩溃 | 捕获异常，该文件标记 `degraded`，不中断整体 |
 | Ollama 未启动 | `/health` 明确报错，提示启动命令 |
 

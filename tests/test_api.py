@@ -132,7 +132,8 @@ def test_health_is_open_and_reports_rag_index(env):
     assert data["auth_configured"] is True
     assert data["local_mode_allowed"] is False            # 未配白名单 → local 模式关闭
     # 检索器对象存在但索引为空时 available 必须是 False：空转要在 /health 上看得见
-    assert data["rag"] == {"available": False, "index_size": 0}
+    # stale=True 同义：空索引（或索引与当前 embedding 不同空间）不用等审查失败才发现
+    assert data["rag"] == {"available": False, "index_size": 0, "stale": True}
     assert data["db"] is True
 
 
@@ -356,3 +357,27 @@ def test_local_repo_path_whitelist_enforced():
         assert_local_repo_allowed("C:/Users/other/.ssh", settings)       # 白名单外拒绝
     with pytest.raises(RepoNotAllowed):
         assert_local_repo_allowed(str(root), Settings(_env_file=None))   # 未配置即禁用
+
+
+def test_retriever_is_built_once_per_app(env, monkeypatch):
+    """检索器按应用建一次，不按任务建。
+
+    local embedding 后端每次构造都要加载几百 MB 模型，按任务新建会把一份 PR 的
+    审查时间拖长几十秒；"索引过期就自愈重建"也只该在一个进程生命周期里发生一次。
+    """
+    import pr_reviewer.rag as rag_mod
+
+    made: list[int] = []
+    base = rag_mod.StandardsRetriever
+
+    class Counting(base):
+        def __init__(self, *args, **kwargs):
+            made.append(1)
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(rag_mod, "StandardsRetriever", Counting)
+    make_app, _ = env
+    client = make_app()
+    client.get("/health")
+    client.post("/review", json=REQUEST, headers=AUTH)
+    assert len(made) == 1, f"检索器被重复构造 {len(made)} 次"
