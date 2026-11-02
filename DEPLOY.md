@@ -253,6 +253,7 @@ stage=task_done … stage=published task=… inline=1 deferred=0 summary=True
 | 报告里没有"命中规范"、`check_retrieval` 召回低 | 索引没建 / embedding 与阈值不匹配 / 降级成了 hash 词袋 | 依次跑 §3 两条命令，看 `/health` 的 `rag.index_size` |
 | 任务一直 `running` | 大 PR 排队中（并发上限默认 2） | 看 `/health` 的 `load.pending`，调 `MAX_CONCURRENT_REVIEWS` |
 | 任务 `failed` 且 error 是友好文案 | 细节在服务端日志的 `stage=task_failed` | 按 `review_id` 去日志里找 `error_type` |
+| 日志里 `error_type=ConnectError` + `CERTIFICATE_VERIFY_FAILED: unable to get local issuer certificate` | 本机有 TLS 拦截代理（GitHub 加速类工具、Zscaler / 深信服等审计代理），它的根证书只装在**系统信任库**里，而 httpx 默认只认 certifi | 项目已把出站策略改成「系统信任库 ∪ certifi」，升级到此版本即可；仍失败就把那个根证书装进系统信任库（Linux：放 `/usr/local/share/ca-certificates` 后 `update-ca-certificates`）。**不要**改成 `verify=False` |
 | 没有行内评论只有摘要评论 | 行号不在 diff 覆盖范围（合并后漂移，GitHub 返回 422），条目已退化进摘要 | 正常降级；若整份都这样，检查 `commit_id` 是否取的是 PR head |
 | 任务 completed 但 PR 上没评论 | 看 `GET /review/{id}` 的 `publish` 字段：`failed` 是 GitHub 侧报错（附异常摘要），`skipped` 是没配 token 或缓存命中没重复发 | 按 `publish.reason` 处置；写回本身在 `completed` 之前完成，所以不会出现"评论还在路上"的中间态 |
 | 报告出了但状态还停在 `running` | 写回评论要等 GitHub API（单请求最多 30s，问题多时逐条发） | 属设计取舍：宁可让状态可见得慢，也不让"已完成"撒谎。要立刻拿报告就设 `post_comments=false` 走 `/review` |

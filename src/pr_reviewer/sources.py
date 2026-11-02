@@ -19,6 +19,7 @@ from urllib.parse import quote
 import httpx
 
 from pr_reviewer.diff_extractor import DiffResult, parse_unified_diff
+from pr_reviewer.net import ssl_context
 
 TIMEOUT = 30
 
@@ -99,7 +100,8 @@ def _github_client(settings=None) -> httpx.Client:
     token = _github_token(settings)
     if token:
         headers["Authorization"] = f"Bearer {token}"
-    return httpx.Client(base_url=_github_base(settings), headers=headers, timeout=TIMEOUT)
+    return httpx.Client(base_url=_github_base(settings), headers=headers, timeout=TIMEOUT,
+                        verify=ssl_context())
 
 
 def fetch_diff_github(repo_url: str, pr_number: int, settings=None) -> tuple[DiffResult, str]:
@@ -132,7 +134,7 @@ def _gitlab_client() -> tuple[httpx.Client, str]:
     headers = {}
     if os.environ.get("GITLAB_TOKEN"):
         headers["PRIVATE-TOKEN"] = os.environ["GITLAB_TOKEN"]
-    return httpx.Client(headers=headers, timeout=TIMEOUT), base
+    return httpx.Client(headers=headers, timeout=TIMEOUT, verify=ssl_context()), base
 
 
 def fetch_diff_gitlab(repo_url: str, mr_iid: int) -> tuple[DiffResult, str]:

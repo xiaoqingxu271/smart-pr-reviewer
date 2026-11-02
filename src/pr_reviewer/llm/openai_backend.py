@@ -14,6 +14,7 @@ from pydantic import BaseModel, ValidationError
 
 from pr_reviewer.config import Settings
 from pr_reviewer.llm.base import LLMBackend, LLMOutputError, LLMUnavailableError
+from pr_reviewer.net import ssl_context
 
 if TYPE_CHECKING:      # 只为类型标注引入，运行时仍走延迟导入（缺 openai 也能 import 本模块）
     from openai import OpenAI
@@ -37,13 +38,19 @@ class OpenAIBackend(LLMBackend):
 
     def _ensure_client(self):
         if self._client is None:
+            # 注意：openai SDK 3.x 用的是 httpx2 这个分叉，不是 httpx——传 httpx.Client
+            # 类型不通（mypy 直接报），SDK 也不一定接受
+            import httpx2
             from openai import OpenAI
             # 指数退避交给 SDK（尊重 Retry-After、只重试 408/429/5xx 与连接错误，
             # PRD §6.3），不在业务层重复造轮子
             self._client = OpenAI(api_key=self.settings.openai_api_key,
                                   base_url=self._base_url(),
                                   timeout=self.settings.llm_timeout_seconds,
-                                  max_retries=self.settings.llm_max_retries)
+                                  max_retries=self.settings.llm_max_retries,
+                                  # 信任库与其余出站请求同一套策略（见 net.py）：网关域名
+                                  # 被内网 TLS 代理签发时，SDK 默认的 certifi 校验连不上
+                                  http_client=httpx2.Client(verify=ssl_context()))
         return self._client
 
     @staticmethod
