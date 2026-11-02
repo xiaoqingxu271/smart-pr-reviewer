@@ -20,6 +20,7 @@ import hashlib
 import json
 import math
 import re
+import threading
 import time
 import warnings
 from pathlib import Path
@@ -324,6 +325,7 @@ class StandardsRetriever:
         self.store = store or make_store(settings)
         self.embedder = embedder or make_embedder(settings)
         self._items: list[dict] | None = None
+        self._lock = threading.Lock()      # 保护"发现索引过期 → 重建"这段读改写
 
     # -- 索引 ------------------------------------------------------------
 
@@ -384,9 +386,52 @@ class StandardsRetriever:
 
     # -- 检索 ------------------------------------------------------------
 
+    def _index_matches(self) -> bool:
+        """磁盘上的索引与当前 embedding 是否同一个向量空间。"""
+        items = self.store.all()
+        if not items:
+            return False                              # 空索引：必须建
+        dim = len(items[0]["embedding"])
+        meta = self._read_meta()
+        if meta:
+            return (meta.get("embedder") == self.embedder.name
+                    and meta.get("dim") == dim)
+        # 没有指纹（老库、或测试里手工灌的向量）：只认"维度不同"这一条硬证据。
+        # 维度相同就留着别动——猜不出是不是同一模型，覆盖别人的数据比留着更危险
+        return dim == len(self.embedder.embed_query("索引维度探测"))
+
+    @property
+    def stale(self) -> bool:
+        """索引过期（换了 embedding 后端/模型）。只判断，不重建——探活不能顺手改数据。"""
+        return not self._index_matches()
+
+    def index_size(self) -> int:
+        """条款数，不触发重建（/health 用）。"""
+        return len(self.store.all())
+
     def _load(self) -> list[dict]:
+        """取索引，必要时先自愈重建。
+
+        以前只有 build_index 比指纹，而服务只调 retrieve：换后端启动（或依赖没装齐
+        自动降级成 hash 词袋）时，256 维的查询去比 768 维的旧向量，维度对不上直接
+        ValueError 把整份审查判失败——真实事故：webhook 触发的 PR 审查就是这么挂的。
+        维度恰好相同时更糟：不报错，只给一套不可解释的分数。
+        """
         if self._items is None:
-            self._items = self.store.all()
+            with self._lock:
+                if self._items is None:
+                    had_items = bool(self.store.all())
+                    if not self._index_matches():
+                        # 空索引只是首次初始化，静默建；"有内容但不是这个模型建的"才是事故，
+                        # 必须告警——它意味着换后端启动或依赖没装齐自动降级了
+                        if had_items:
+                            warnings.warn(
+                                f"规范索引与当前 embedding 不匹配"
+                                f"（索引={self._read_meta().get('embedder')}，"
+                                f"当前={self.embedder.name}），按当前配置重建",
+                                RuntimeWarning, stacklevel=2)
+                        self.build_index()
+                    self._items = self.store.all()
         return self._items
 
     def size(self) -> int:

@@ -12,6 +12,7 @@
 """
 from __future__ import annotations
 
+import threading
 import uuid
 from contextlib import asynccontextmanager
 
@@ -31,6 +32,9 @@ from pr_reviewer.webhooks import WebhookPayloadInvalid, WebhookRejected, parse_w
 
 GENERIC_FAILURE = "审查未完成：服务端内部错误，请携带 review_id 联系管理员"
 
+# 检索器的"还没建过"哨兵：None 是合法值（无 RAG 降级），不能拿它当未初始化用
+_UNSET = object()
+
 
 def create_app(settings: Settings | None = None, llm=None, retriever=None,
                publisher=None) -> FastAPI:
@@ -46,6 +50,9 @@ def create_app(settings: Settings | None = None, llm=None, retriever=None,
     store = TaskStore(settings.db_path)
     cache = ResultCache(settings.db_path, settings.cache_ttl_hours)
 
+    retriever_lock = threading.Lock()
+    built: dict[str, object] = {"retriever": _UNSET}
+
     def _llm():
         if llm is not None:
             return llm
@@ -53,13 +60,22 @@ def create_app(settings: Settings | None = None, llm=None, retriever=None,
         return get_backend(settings)
 
     def _retriever():
+        """整个应用共用一个检索器实例。
+
+        按任务新建的代价被低估过：local embedding 后端每次构造都要加载几百 MB 模型，
+        一份 PR 的审查时间会被拖长几十秒；而且"发现索引过期就自愈重建"这件事
+        在一个进程生命周期里本来只该发生一次。
+        """
         if retriever is not None:
             return retriever
-        try:
-            from pr_reviewer.rag import StandardsRetriever
-            return StandardsRetriever(settings)
-        except Exception:  # noqa: BLE001 — ChromaDB 不可用 → 无 RAG 降级（PRD §6.3）
-            return None
+        with retriever_lock:
+            if built["retriever"] is _UNSET:
+                try:
+                    from pr_reviewer.rag import StandardsRetriever
+                    built["retriever"] = StandardsRetriever(settings)
+                except Exception:  # noqa: BLE001 — ChromaDB 不可用 → 无 RAG 降级（PRD §6.3）
+                    built["retriever"] = None
+            return built["retriever"]
 
     def _publisher():
         """结果写回 PR 的发布器；没配 token 就是 None（只出报告，不发评论）。"""
@@ -220,9 +236,12 @@ def create_app(settings: Settings | None = None, llm=None, retriever=None,
             probe["llm"] = f"error: {type(exc).__name__}"
         try:
             r = _retriever()
-            size = r.size() if r else 0
+            size = r.index_size() if r else 0
             # available 以"索引真的有内容"为准：空索引就是检索空转，正是最初的故障形态
-            probe["rag"] = {"available": bool(r and size), "index_size": size}
+            # stale：索引与当前 embedding 不在同一向量空间（换后端/依赖没装齐降级时发生，
+            # 首次检索会自愈重建，但运维应该看得见，别等审查失败才发现）
+            probe["rag"] = {"available": bool(r and size), "index_size": size,
+                            "stale": None if r is None else r.stale}
         except Exception as exc:  # noqa: BLE001
             probe["rag"] = {"available": False, "error": type(exc).__name__}
         try:

@@ -130,7 +130,7 @@ curl -s localhost:8000/health | python -m json.tool
 
 ```json
 {"status":"ok","llm_backend":"openai","llm":true,
- "rag":{"available":true,"index_size":17},
+ "rag":{"available":true,"index_size":17,"stale":false},
  "auth_configured":true,"local_mode_allowed":false,
  "webhook_configured":false,"publish_enabled":false,
  "load":{"pending":0,"max_pending":20,"workers":2,"rejected_total":0},"db":true}
@@ -250,6 +250,7 @@ stage=task_done … stage=published task=… inline=1 deferred=0 summary=True
 | `/webhook/github` 403 | 签名不匹配：`WEBHOOK_SECRET` 与仓库侧不一致 | 核对两边密钥一致 |
 | `/webhook/github` 400 并提示 Content type | 仓库 webhook 的 Content type 不是 `application/json`（签名是对的，别去查密钥） | 改成 `application/json` |
 | webhook 返回 `{"ignored":true,"reason":"未配置 GITHUB_TOKEN…"}` | 没配写回令牌 | 加 `Pull requests: Write` 权限的 token |
+| `/health` 的 `rag.stale=true` | 磁盘上的索引不是当前 embedding 建的（换了后端，或依赖没装齐自动降级成 hash 词袋） | 首次检索会自愈重建，不用手工干预；但要的是标定过的检索质量就 `uv sync --extra embed` 再跑 `check_retrieval` |
 | 报告里没有"命中规范"、`check_retrieval` 召回低 | 索引没建 / embedding 与阈值不匹配 / 降级成了 hash 词袋 | 依次跑 §3 两条命令，看 `/health` 的 `rag.index_size` |
 | 任务一直 `running` | 大 PR 排队中（并发上限默认 2） | 看 `/health` 的 `load.pending`，调 `MAX_CONCURRENT_REVIEWS` |
 | 任务 `failed` 且 error 是友好文案 | 细节在服务端日志的 `stage=task_failed` | 按 `review_id` 去日志里找 `error_type` |

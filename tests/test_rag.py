@@ -278,3 +278,42 @@ def test_index_rebuilt_when_embedder_changes(tmp_path):
     StandardsRetriever(make_settings(tmp_path), store=InMemoryStore(store_path),
                        embedder=emb3).build_index(md)
     assert emb3.doc_inputs == [], "同模型同文档应跳过编码"
+
+
+def test_retrieve_heals_index_built_by_another_embedder(tmp_path):
+    """换了 embedding 后端启动时，检索要自愈重建，而不是把整份审查判失败。
+
+    真实事故：磁盘上是 bge 的 768 维索引，服务因缺 sentence-transformers 降级成
+    256 维 hash 词袋——查询向量与旧向量维度不同，_cosine 的 strict zip 抛 ValueError，
+    webhook 触发的第一次真实审查就挂在这里。以前只有 build_index 比指纹，
+    而服务只调 retrieve，等于把"防混库"设计留在了没人走的分支上。
+    """
+    md = write_md(tmp_path)
+    store_path = tmp_path / "heal.json"
+    big = StandardsRetriever(make_settings(tmp_path), store=InMemoryStore(store_path),
+                             embedder=TableEmbedder([1.0] * 8, name="st:bge-fake"))
+    assert big.build_index(md) == 4
+    assert big.stale is False
+
+    small = StandardsRetriever(make_settings(tmp_path), store=InMemoryStore(store_path),
+                               embedder=TableEmbedder([1.0, 0.0], name="hash-bow-2d"))
+    assert small.stale is True                       # /health 要能看见，运维不用等审查失败
+    hits = small.retrieve("subprocess.run(cmd, shell=True)")   # 不该抛 ValueError
+    assert isinstance(hits, list)
+    assert small.stale is False                      # 已按当前后端重建
+    assert len(small._load()[0]["embedding"]) == 2   # 库里的向量换成了 2 维
+
+
+def test_manual_store_without_fingerprint_is_left_alone(tmp_path):
+    """没有指纹文件时只认"维度不同"这条硬证据；维度相同就不覆盖别人的数据。
+
+    测试与脚本会手工往 store 里灌向量。这种情况下猜"是不是同一个模型"没有依据，
+    贸然重建会把人家灌进去的数据清掉——所以只在维度对不上时才动手。
+    """
+    store = InMemoryStore(tmp_path / "manual.json")
+    retriever = StandardsRetriever(make_settings(tmp_path), store=store,
+                                   embedder=TableEmbedder([1.0, 0.0]))
+    store.add(ids=["SEC-001"], embeddings=[[0.0, 1.0]], documents=["手工数据"],
+              metadatas=[{"rule_id": "SEC-001", "title": "T"}])
+    assert retriever.stale is False                  # 维度一致 → 不动它
+    assert retriever._load()[0]["document"] == "手工数据"
