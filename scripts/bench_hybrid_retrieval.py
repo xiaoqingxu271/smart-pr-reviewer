@@ -191,7 +191,9 @@ def main() -> int:
 
 
 def write_report(payload: dict, path: Path) -> None:
-    hdr = ["语料条数", "带官方示例", "模式", "recall@1", "recall@5", "recall@10",
+    # 档位名必须进表：956 与 956+官方示例的"条数"和"带示例数"完全相同，
+    # 只有档位名能区分——上一版两行看起来一模一样，读者无法判断哪行是哪个实验
+    hdr = ["档位", "语料条数", "带官方示例", "模式", "recall@1", "recall@5", "recall@10",
            "recall@20", "MRR", "守10%泄漏时recall@10", "该工作点阈值", "实际泄漏"]
     s = payload["snapshot"]
     lines = ["# 混合检索对照（稠密 / BM25 词法 / RRF 融合）", "",
@@ -202,10 +204,10 @@ def write_report(payload: dict, path: Path) -> None:
              f"- 工作点口径：不假设绝对门限，由**当轮干净块 top1 分布**反推阈值，"
              f"比较「误放行 ≤ {payload['leak_target']:.0%} 时还能召回多少」",
              "", "| " + " | ".join(hdr) + " |", "|" + "---|" * len(hdr)]
-    for tier in sorted(payload["results"].values(), key=lambda v: v["rules"]):
+    for name, tier in sorted(payload["results"].items(), key=lambda kv: kv[1]["rules"]):
         for mode in ("稠密", "词法", "混合RRF"):
             m, op = tier["modes"][mode], tier["modes"][mode]["工作点"]
-            lines.append(f"| {tier['rules']} | {tier['with_code']} | {mode} "
+            lines.append(f"| {name} | {tier['rules']} | {tier['with_code']} | {mode} "
                          f"| {m['recall@k']['1']:.2f} | {m['recall@k']['5']:.2f} "
                          f"| {m['recall@k']['10']:.2f} | {m['recall@k']['20']:.2f} "
                          f"| {m['mrr']:.2f} | {op['recall']:.2f} | {op['threshold']} "
