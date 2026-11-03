@@ -10,3 +10,8 @@ build/
 reports/
 .data/
 .vscode/
+
+# 真实语料评测的本地产物：CWE 原始包 / Bandit 标注 / 切好的语料 / 结果 JSON。
+# 可由 scripts 三步复现（manifest 记了 CWE 版本、zip sha256 与抽样种子）；
+# 不入库还有一条硬理由：标注里带本机绝对路径。
+/data/

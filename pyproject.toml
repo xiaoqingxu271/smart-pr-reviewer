@@ -18,6 +18,9 @@ dependencies = [
 [project.optional-dependencies]
 local = ["ollama>=0.3"]  # Ollama 本地后端按需安装
 embed = ["sentence-transformers>=3.3"]  # EMBEDDING_BACKEND=local（源码不出机器）
+# 真实语料评测用（scripts/ 里的 CWE + Bandit 链路）：不进 CI，也不进服务运行时
+# scipy 原来只是 threshold_sweep 里的隐式依赖（靠 chromadb 传递带进来的），一并声明
+eval = ["bandit>=1.9", "scipy>=1.11"]
 
 [dependency-groups]
 dev = [

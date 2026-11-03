@@ -16,6 +16,7 @@ margin 只裁尾部。因为实测"正确条款恒为 top1"，所以漏召只会
 """
 from __future__ import annotations
 
+import collections
 import hashlib
 import json
 import math
@@ -32,7 +33,7 @@ from pr_reviewer.models import RuleHit
 if TYPE_CHECKING:      # 仅为类型标注引入，运行时保持延迟导入
     from openai import OpenAI
 
-RULE_HEADER = re.compile(r"^##\s+(SEC-\d{3,})\s+(.*)$")
+RULE_HEADER = re.compile(r"^##\s+([A-Z]{2,6}-\d{2,6})\s+(.*)$")
 _WORD = re.compile(r"[a-zA-Z0-9_]+")
 _FENCE = re.compile(r"^\s*(?:```|~~~)")
 
@@ -43,7 +44,10 @@ LEGACY_HASH_FILE = ".standards.sha256"      # 旧版只存 sha256 的侧文件�
 # ---------------------------------------------------------------- 条款解析
 
 def parse_standards_md(text: str) -> list[dict]:
-    """按二级标题切块；标题必须含条款编号（如 "## SEC-002 SQL 查询禁止字符串拼接"）。
+    """按二级标题切块；标题必须含条款编号（如 "## SEC-002 …"，也接受 "## CWE-0089 …"）。
+
+    编号前缀不写死 SEC-：换成 CWE 官方目录做规模测量时，条款号是 CWE-xxxx，
+    写死前缀会让整份真实语料被静默解析成 0 条——比报错更危险。
 
     一级标题与首个条款前的说明文字不入库。代码围栏（``` / ~~~）内的行一律不参与
     标题判定：条款示例里的 Python 注释行以 `#` 开头，若当成块边界会把条款正文静默
@@ -75,7 +79,14 @@ def parse_standards_md(text: str) -> list[dict]:
         elif current is not None:
             current["text"] += line + "\n"
     close()
-    return [r for r in rules if r["text"]]
+    kept = [r for r in rules if r["text"]]
+    # 同一编号出现两次必须当场炸：检索会返回"顺序决定的那一条"，
+    # 报告里写的依据就不可复现了。语料是机器生成的（CWE 档位），更容易悄悄重复。
+    counts = collections.Counter(r["rule_id"] for r in kept)
+    dupes = sorted(rid for rid, n in counts.items() if n > 1)
+    if dupes:
+        raise ValueError(f"规范文档里条款编号重复：{dupes}")
+    return kept
 
 
 # ---------------------------------------------------------------- Embedding

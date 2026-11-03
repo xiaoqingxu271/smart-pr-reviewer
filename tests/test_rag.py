@@ -8,6 +8,8 @@ import json
 import math
 from pathlib import Path
 
+import pytest
+
 from pr_reviewer.config import Settings
 from pr_reviewer.rag import (
     INDEX_META_FILE,
@@ -317,3 +319,27 @@ def test_manual_store_without_fingerprint_is_left_alone(tmp_path):
               metadatas=[{"rule_id": "SEC-001", "title": "T"}])
     assert retriever.stale is False                  # 维度一致 → 不动它
     assert retriever._load()[0]["document"] == "手工数据"
+
+
+def test_parse_accepts_cwe_style_rule_ids(tmp_path):
+    """条款号前缀不能写死 SEC-：换成 CWE 官方目录时会被静默解析成 0 条。
+
+    0 条不报错，只是检索永远空转——比直接抛异常危险得多。
+    """
+    md = tmp_path / "cwe.md"
+    md.write_text(
+        "# CWE 节选\n\n"
+        "## CWE-0089 SQL 命令拼接\n\n程序使用动态构造的 SQL 语句执行查询。\n\n"
+        "## CWE-89 变体标题（编号位数不足）\n\n不该被解析。\n\n",
+        encoding="utf-8")
+    rules = parse_standards_md(md.read_text(encoding="utf-8"))
+    # 位数不锁死：CWE-0089 与 CWE-89 都算条款号（语料由脚本统一补零，见 build_cwe_corpus）
+    assert [r["rule_id"] for r in rules] == ["CWE-0089", "CWE-89"]
+
+
+def test_duplicate_rule_ids_are_rejected(tmp_path):
+    """同一编号两条正文 → 检索返回哪条由顺序决定，报告里的依据就不可复现。"""
+    md = tmp_path / "dup.md"
+    md.write_text("## SEC-001 A\n\n正文一\n\n## SEC-001 B\n\n正文二\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="重复"):
+        parse_standards_md(md.read_text(encoding="utf-8"))
