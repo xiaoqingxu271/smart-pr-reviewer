@@ -15,6 +15,7 @@
 """
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import random
@@ -31,12 +32,17 @@ REPO = Path(__file__).resolve().parent.parent
 CORPUS = REPO / "data" / "corpus"
 MANIFEST = CORPUS / "manifest.json"
 LABELS = REPO / "data" / "labels" / "bandit_findings.json"
-REPORT = REPO / "experiments" / "retrieval-scale.md"
+REPORT = REPO / "experiments" / "retrieval-scale.md"   # 实际写出的文件名会带模型后缀
 
 MAX_PER_RULE = 20          # 每种 CWE 最多取多少查询：不让 CWE-703 的几百条淹没稀有项
 N_CLEAN = 120              # 干净对照组样本量
 SEED = 20261102
 KS = (1, 3, 5, 10, 20)
+
+
+def slugify(name: str) -> str:
+    """`st:BAAI/bge-base-zh-v1.5` -> `bge-base-zh-v1.5`：结果文件名要能区分模型。"""
+    return name.rsplit("/", 1)[-1].replace(":", "-")
 
 
 def rule_id(cwe: int) -> str:
@@ -99,7 +105,7 @@ def build_queries() -> tuple[list[dict], list[dict], dict]:
 
 
 def measure(retriever: StandardsRetriever, queries: list[dict], threshold: float,
-            top_k: int) -> dict:
+            top_k: int, n_rules: int) -> dict:
     """在给定门限下跑一遍查询：召回、分数带、注入条数。"""
     s = retriever.settings
     s.retrieval_score_threshold, s.retrieval_margin = threshold, 1.0
@@ -117,6 +123,7 @@ def measure(retriever: StandardsRetriever, queries: list[dict], threshold: float
             kept += 1
     n = len(queries)
     return {"recall@k": {str(k): round(sum(1 for r in ranks if r <= k) / n, 4) for k in KS},
+            "随机基线@k": {str(k): round(min(k, n_rules) / n_rules, 4) for k in KS},
             "mrr": round(statistics.fmean(1 / r if r < 99 else 0 for r in ranks), 4),
             "正确条款进前k比例": round(kept / n, 4),
             "正确条款top1分数": {"min": round(min(correct_scores), 4),
@@ -144,12 +151,23 @@ def measure_clean(retriever: StandardsRetriever, clean: list[dict], threshold: f
                                "max": round(max(top1_scores), 4)}}
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description="检索规模曲线")
+    ap.add_argument("--tiers", default="", help="只跑这些档位名（逗号分隔），默认全部；冒烟测试用")
+    ap.add_argument("--limit", type=int, default=0, help="每档最多跑多少查询（0=全部）")
+    args = ap.parse_args(argv)
+
     if not MANIFEST.exists():
         print("先跑 scripts/build_cwe_corpus.py", file=sys.stderr)
         return 2
     manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
     queries, clean, qstats = build_queries()
+    if args.limit:
+        queries = queries[: args.limit]
+        clean = clean[: max(1, args.limit // 2)]
+        qstats = {**qstats, "queries": len(queries), "clean": len(clean),
+                  "smoke_limit": args.limit}
+        print(f"!! 冒烟模式：只跑 {len(queries)} 查询 / {len(clean)} 干净块，数字不代表最终结论")
     print(f"查询 {qstats['queries']} 条（{qstats['cwe_kinds']} 个 CWE，每种上限 "
           f"{MAX_PER_RULE}）；干净对照 {qstats['clean']} 块；来源文件 {qstats['files']} 个")
 
@@ -161,7 +179,10 @@ def main() -> int:
     base = Settings(_env_file=None, embedding_backend=settings0.embedding_backend,
                     retrieval_top_k=5, retrieval_score_threshold=0.45, retrieval_margin=0.05)
     results: dict[str, dict] = {}
+    wanted = {s.strip() for s in args.tiers.split(",") if s.strip()}
     for tier_name, tier in manifest["tiers"].items():
+        if wanted and tier_name not in wanted:
+            continue
         md = CORPUS / tier["file"]
         with tempfile.TemporaryDirectory() as tmp:
             s = Settings(_env_file=None, standards_md_path=md,
@@ -177,9 +198,9 @@ def main() -> int:
             absent = sorted(want_ids - {item["id"] for item in r._load()})
             if absent:
                 raise SystemExit(f"!! 档位 {tier_name} 缺期望条款 {absent}，先修语料再测")
-            raw = measure(r, queries, threshold=0.0, top_k=max(KS))     # 无门限：纯排序质量
+            raw = measure(r, queries, threshold=0.0, top_k=max(KS), n_rules=built)
             gated = measure(r, queries, threshold=base.retrieval_score_threshold,
-                            top_k=base.retrieval_top_k)
+                            top_k=base.retrieval_top_k, n_rules=built)
             clean_m = measure_clean(r, clean, base.retrieval_score_threshold,
                                     base.retrieval_top_k)
         results[tier_name] = {"rules": built,
@@ -202,21 +223,29 @@ def main() -> int:
                "results": results}
     blob = json.dumps(payload, ensure_ascii=False, sort_keys=True)
     payload["result_sha256"] = hashlib.sha256(blob.encode()).hexdigest()[:16]
-    (CORPUS / "scale-results.json").write_text(json.dumps(payload, ensure_ascii=False,
-                                                          indent=1), encoding="utf-8")
-    write_report(payload)
-    print(f"\n结果哈希 {payload['result_sha256']}（连跑两次必须一致）→ {REPORT}")
+    slug = slugify(embedder.name)
+    results_path = CORPUS / f"scale-results-{slug}.json"
+    report_path = REPORT.with_name(f"retrieval-scale-{slug}.md")
+    results_path.write_text(json.dumps(payload, ensure_ascii=False, indent=1),
+                            encoding="utf-8")
+    write_report(payload, report_path)
+    print(f"\n结果哈希 {payload['result_sha256']}（连跑两次必须一致）→ {report_path}")
     return 0
 
 
-def write_report(payload: dict) -> None:
+def write_report(payload: dict, path: Path) -> None:
     m, res = payload["manifest"], payload["results"]
+    # 表头与分隔行由同一个列表生成：手抄分隔行少一格就会整表错位（第一版就错了 3 列）
+    hdr = ["语料条数", "带官方示例", "recall@1", "recall@3", "recall@5",
+           "recall@10", "recall@20", "随机@1", "随机@5", "随机@20", "MRR",
+           "门限0.45保留", "干净块误放行", "干扰项top1 median/p90"]
     lines = [
         "# 检索层随语料规模的退化（真实 CWE 语料 + Bandit 真实标注）",
         "",
         f"- 规则来源：{m['source_url']}（CWE {m['catalog_version']}，{m['catalog_date']}，"
         f"zip sha256 `{m['zip_sha256'][:16]}`）",
-        f"- 标注来源：Bandit {m['labels']['bandit_version']} 扫描 "
+        f"- 标注来源：Bandit {str(m['labels']['bandit_version']).splitlines()[0].split()[-1]}"
+        f" 扫描 "
         f"{m['labels']['files_scanned']} 个真实源码文件（{len(m['labels']['roots'])} 个目录），"
         f"取 {m['labels']['findings_used']} 条 finding 的 CWE 编号",
         f"- 剔除：`{m['labels']['dropped_test_ids']}`（Bandit 自己就建议在测试码里忽略）"
@@ -229,9 +258,8 @@ def write_report(payload: dict) -> None:
         f"margin={payload['params']['margin']}",
         f"- 结果哈希：`{payload['result_sha256']}`（同机重跑应完全一致）",
         "",
-        "| 语料条数 | 带官方示例 | recall@1 | recall@3 | recall@5 | recall@10 | recall@20 "
-        "| MRR | 门限0.45保留 | 干净块误放行 | 干扰项top1 median/p90 |",
-        "|---|---|---|---|---|---|---|---|---|---|",
+        "| " + " | ".join(hdr) + " |",
+        "|" + "---|" * len(hdr),
     ]
     gated_key = f"生产口径@{payload['params']['threshold']}"
     for r in sorted(res.values(), key=lambda v: v["rules"]):
@@ -239,7 +267,9 @@ def write_report(payload: dict) -> None:
         lines.append(f"| {r['rules']} | {r['rules_with_official_code']} "
                      f"| {raw['recall@k']['1']:.2f} | {raw['recall@k']['3']:.2f} "
                      f"| {raw['recall@k']['5']:.2f} | {raw['recall@k']['10']:.2f} "
-                     f"| {raw['recall@k']['20']:.2f} | {raw['mrr']:.2f} | {gated:.2f} "
+                     f"| {raw['recall@k']['20']:.2f} "
+                     f"| {raw['随机基线@k']['1']:.2f} | {raw['随机基线@k']['5']:.2f} "
+                     f"| {raw['随机基线@k']['20']:.2f} | {raw['mrr']:.2f} | {gated:.2f} "
                      f"| {cl['误放行率']:.2f} | {cl['干扰项top1分数']['median']:.3f}"
                      f" / {cl['干扰项top1分数']['p90']:.3f} |")
     lines += ["", "重建（`data/` 不入库：CWE 原始包 2 MB、标注里带本机绝对路径）：", "",
@@ -251,7 +281,7 @@ def write_report(payload: dict) -> None:
               "```", "", "读法：`recall@k` 是**关掉门限**的纯排序质量；`门限0.45保留` 是生产口径下"
               "正确条款仍出现在返回结果里的比例；`干净块误放行` 是没有 finding 的代码块被塞进"
               "条款的比例。逐查询明细见 `data/corpus/scale-results.json`。"]
-    REPORT.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 if __name__ == "__main__":
