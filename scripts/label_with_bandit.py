@@ -38,6 +38,8 @@ def collect(roots: list[Path], limit: int | None) -> list[Path]:
                 continue
             if not p.is_file() or p.stat().st_size > 200_000:
                 continue
+            if p.is_relative_to(REPO):
+                continue        # 本项目自己的代码一直在改，不能当固定评测样本
             files.append(p)
     files.sort()
     return files[:limit] if limit else files

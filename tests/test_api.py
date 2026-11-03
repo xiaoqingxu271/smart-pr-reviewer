@@ -42,9 +42,11 @@ REQUEST = {"mode": "local", "repo_path": "/srv/repos/app",
            "base_branch": "main", "head_branch": "feat"}
 
 
-def wait_for_state(client, task_id, want="completed", timeout=15.0) -> dict:
+def wait_for_state(client, task_id, want="completed", timeout=30.0) -> dict:
     """任务现在是真后台执行（有界线程池），不像 BackgroundTasks 那样在下一次请求前
     保证跑完——所以测试也按真实客户端的方式轮询，这本来就是 API 契约的一部分。
+    窗口给到 30s：本机同时跑着 CPU 密集的评测（torch 吃满核）时，15s 会假红，
+    而这不是产品缺陷。真正要钉的是状态机语义，不是"这台机器多快"。
     """
     deadline = time.time() + timeout
     detail = {}

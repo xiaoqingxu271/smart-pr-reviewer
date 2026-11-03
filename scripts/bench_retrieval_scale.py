@@ -32,12 +32,21 @@ REPO = Path(__file__).resolve().parent.parent
 CORPUS = REPO / "data" / "corpus"
 MANIFEST = CORPUS / "manifest.json"
 LABELS = REPO / "data" / "labels" / "bandit_findings.json"
+SNAPSHOT = REPO / "data" / "labels" / "query-snapshot.json"
 REPORT = REPO / "experiments" / "retrieval-scale.md"   # 实际写出的文件名会带模型后缀
 
 MAX_PER_RULE = 20          # 每种 CWE 最多取多少查询：不让 CWE-703 的几百条淹没稀有项
 N_CLEAN = 120              # 干净对照组样本量
 SEED = 20261102
 KS = (1, 3, 5, 10, 20)
+
+
+def _in_repo(path: str) -> bool:
+    """这个文件是不是本项目自己的源码——我们正在改它，不能当固定评测样本。"""
+    try:
+        return Path(path).resolve().is_relative_to(REPO)
+    except OSError:
+        return False
 
 
 def slugify(name: str) -> str:
@@ -49,8 +58,18 @@ def rule_id(cwe: int) -> str:
     return f"CWE-{cwe:04d}"
 
 
-def build_queries() -> tuple[list[dict], list[dict], dict]:
-    """(漏洞查询, 干净对照, 统计) —— 查询文本用生产分块器的语法块。"""
+def build_queries(refreeze: bool = False) -> tuple[list[dict], list[dict], dict]:
+    """(漏洞查询, 干净对照, 统计) —— 查询文本用生产分块器的语法块。
+
+    结果**冻结到 data/labels/query-snapshot.json**。这不是洁癖，是被一次失败的双跑逼出来的：
+    同一份脚本连跑两次，查询的 recall 逐位一致，但干净块指标漂了（误放行 0.82 → 0.88）。
+    根因是扫描根目录里含本项目自己，而我正在改它——对照组是从源码**现场**切的，
+    两次跑切到的根本不是同一批块。评测数据必须是快照，不能每次现场重算。
+    """
+    if SNAPSHOT.exists() and not refreeze:
+        snap = json.loads(SNAPSHOT.read_text(encoding="utf-8"))
+        return snap["queries"], snap["clean"], snap["stats"]
+
     manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
     labels = json.loads(LABELS.read_text(encoding="utf-8"))
     dropped_tests = set(manifest["labels"]["dropped_test_ids"])
@@ -62,10 +81,14 @@ def build_queries() -> tuple[list[dict], list[dict], dict]:
     seen: set[tuple[str, int]] = set()
     cache: dict[str, list[dict]] = {}
     unreadable = 0
+    skipped_repo = 0
     for f in sorted(labels["findings"], key=lambda x: (x["cwe_id"] or 0, x["filename"],
                                                        x["line_number"])):
         cwe, path = f.get("cwe_id"), f["filename"]
         if not cwe or f["test_id"] in dropped_tests or cwe in unrecallable:
+            continue
+        if _in_repo(path):              # 本项目自己的代码正在被改，不能当固定样本
+            skipped_repo += 1
             continue
         if path not in cache:
             try:
@@ -100,7 +123,12 @@ def build_queries() -> tuple[list[dict], list[dict], dict]:
     clean = pool[:N_CLEAN]
     stats = {"cwe_kinds": len(per_cwe), "queries": len(queries), "clean": len(clean),
              "files": len(cache), "unreadable_files": unreadable,
+             "skipped_files_in_this_repo": skipped_repo,
              "per_cwe_all": {str(k): len(v) for k, v in sorted(per_cwe.items())}}
+    SNAPSHOT.parent.mkdir(parents=True, exist_ok=True)
+    SNAPSHOT.write_text(json.dumps({"queries": queries, "clean": clean, "stats": stats},
+                                   ensure_ascii=False, indent=1), encoding="utf-8")
+    print(f"查询快照已冻结 → {SNAPSHOT}")
     return queries, clean, stats
 
 
@@ -155,13 +183,15 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="检索规模曲线")
     ap.add_argument("--tiers", default="", help="只跑这些档位名（逗号分隔），默认全部；冒烟测试用")
     ap.add_argument("--limit", type=int, default=0, help="每档最多跑多少查询（0=全部）")
+    ap.add_argument("--refreeze", action="store_true",
+                    help="重新切分并覆盖查询快照；默认读快照，保证两次跑的是同一批数据")
     args = ap.parse_args(argv)
 
     if not MANIFEST.exists():
         print("先跑 scripts/build_cwe_corpus.py", file=sys.stderr)
         return 2
     manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
-    queries, clean, qstats = build_queries()
+    queries, clean, qstats = build_queries(args.refreeze)
     if args.limit:
         queries = queries[: args.limit]
         clean = clean[: max(1, args.limit // 2)]
